@@ -1,0 +1,6 @@
+{
+  "name": "Saint Peter's School - Evaluaciones de Ciencias",
+  "description": "Plataforma oficial de prácticas y pruebas sumativas de Ciencias para Secundaria (7.°, 8.°, 9.° y 10.° Química) con control anti-fraude y gestión docente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
