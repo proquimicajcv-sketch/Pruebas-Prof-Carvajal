@@ -7,6 +7,7 @@ import type {
 import { examData } from '../data/examData.ts';
 import { biologyExamData } from '../data/biologyExamData.ts';
 import { isabellaExamData } from '../data/isabellaExamData.ts';
+import { isabellaBioExamData } from '../data/isabellaBioExamData.ts';
 
 export function sanitizeCompleteInput(raw: string): string {
   return raw
@@ -91,6 +92,27 @@ const ISABELLA_BONUS_KEYWORDS: string[] = [
   'energia',
   'luz',
   'ahorra',
+];
+
+const ISABELLA_BIO_DEV_KEYWORDS: string[] = [
+  'oxigeno',
+  'respirar',
+  'respiracion',
+  'alimento',
+  'glucosa',
+  'energia',
+  'plantas',
+  'vida',
+  'planeta',
+  'aire',
+  'dioxido',
+  'co2',
+  'limpia',
+  'ambiente',
+  'cadena',
+  'productores',
+  'seres vivos',
+  'animales',
 ];
 
 const BIOLOGY_RUBRICS: Record<string, string[]> = {
@@ -220,16 +242,20 @@ export function evaluateFullSubmission(
     };
   }
 
-  if (level === '10-quim-isa') {
+  if (level === '10-quim-isa' || level === '10-bio-isa') {
+    const isaCfg = level === '10-bio-isa' ? isabellaBioExamData : isabellaExamData;
+    const devKeywords =
+      level === '10-bio-isa' ? ISABELLA_BIO_DEV_KEYWORDS : ISABELLA_DEV_KEYWORDS;
+
     let selection = 0;
-    isabellaExamData.selection.forEach((item, idx) => {
+    isaCfg.selection.forEach((item, idx) => {
       if (answers.selection[idx] === item.correct) {
         selection += 1;
       }
     });
 
     let matching = 0;
-    isabellaExamData.matching1.forEach((item, idx) => {
+    isaCfg.matching1.forEach((item, idx) => {
       const val = answers.matching[idx];
       if (val !== '' && val !== undefined && Number(val) === item.correctIndex) {
         matching += 1;
@@ -238,7 +264,7 @@ export function evaluateFullSubmission(
 
     let matching2 = 0;
     const m2Ans = answers.matching2 || {};
-    isabellaExamData.matching2.forEach((item, idx) => {
+    isaCfg.matching2.forEach((item, idx) => {
       const val = m2Ans[idx];
       if (val !== '' && val !== undefined && Number(val) === item.correctIndex) {
         matching2 += 1;
@@ -246,29 +272,23 @@ export function evaluateFullSubmission(
     });
 
     let completes = 0;
-    isabellaExamData.completes.forEach((item, idx) => {
+    isaCfg.completes.forEach((item, idx) => {
       if (isIsabellaCompleteCorrect(answers.completes[idx] || '', item.acceptableAnswers)) {
         completes += 1;
       }
     });
 
     const devText = answers.development[0] || '';
-    const devScore = scoreRubricResponse(
-      devText,
-      ISABELLA_DEV_KEYWORDS,
-      isabellaExamData.development.value
-    );
-    const bonusScore = scoreRubricResponse(
-      answers.bonus || '',
-      ISABELLA_BONUS_KEYWORDS,
-      isabellaExamData.bonus.value
-    );
+    const devScore = scoreRubricResponse(devText, devKeywords, isaCfg.development.value);
+    const bonusScore = isaCfg.bonus
+      ? scoreRubricResponse(answers.bonus || '', ISABELLA_BONUS_KEYWORDS, isaCfg.bonus.value)
+      : 0;
 
-    const selectionTotal = isabellaExamData.selection.length;
-    const matchingTotal = isabellaExamData.matching1.length;
-    const matching2Total = isabellaExamData.matching2.length;
-    const completesTotal = isabellaExamData.completes.length;
-    const developmentTotal = isabellaExamData.development.value;
+    const selectionTotal = isaCfg.selection.length;
+    const matchingTotal = isaCfg.matching1.length;
+    const matching2Total = isaCfg.matching2.length;
+    const completesTotal = isaCfg.completes.length;
+    const developmentTotal = isaCfg.development.value;
 
     const baseEarned = selection + matching + matching2 + completes + devScore;
     const baseTotal =
@@ -292,7 +312,7 @@ export function evaluateFullSubmission(
       developmentTotal,
       developmentDetails: [devScore],
       bonus: bonusScore,
-      bonusTotal: isabellaExamData.bonus.value,
+      bonusTotal: isaCfg.bonus?.value ?? 0,
       baseEarned,
       baseTotal,
       totalEarnedWithBonus,
@@ -403,6 +423,8 @@ export function buildSubmissionsCsv(submissions: StoredSubmission[]): string {
         ? '10.° Biología'
         : s.student.level === '10-quim-isa'
         ? 'Química Isabella Antonino'
+        : s.student.level === '10-bio-isa'
+        ? 'Biología Isabella Antonino'
         : s.student.level === 10
         ? '10.° Química'
         : `${s.student.level}.° Año`;
@@ -427,7 +449,7 @@ export function buildSubmissionsCsv(submissions: StoredSubmission[]): string {
           )
         )
         .join(' || ');
-    } else if (s.student.level === '10-quim-isa') {
+    } else if (s.student.level === '10-quim-isa' || s.student.level === '10-bio-isa') {
       openResponses = `[V. Desarrollo (${g.development}/2)]: ${s.answers.development[0] || 'Sin respuesta'}`;
     } else {
       openResponses = [0, 1, 2]
@@ -439,7 +461,7 @@ export function buildSubmissionsCsv(submissions: StoredSubmission[]): string {
     const asocieCol =
       s.student.level === '10-bio'
         ? 'N/A'
-        : s.student.level === '10-quim-isa'
+        : s.student.level === '10-quim-isa' || s.student.level === '10-bio-isa'
         ? `${g.matching + (g.matching2 ?? 0)} / ${g.matchingTotal + (g.matching2Total ?? 0)}`
         : g.matching;
 
@@ -453,7 +475,7 @@ export function buildSubmissionsCsv(submissions: StoredSubmission[]): string {
       asocieCol,
       s.student.level === '10-bio' ? 'N/A' : g.completes,
       s.student.level === '10-bio' ? 'N/A' : g.development,
-      s.student.level === '10-bio' ? 'N/A' : g.bonus,
+      s.student.level === '10-bio' || s.student.level === '10-bio-isa' ? 'N/A' : g.bonus,
       s.student.level === '10-bio' ? g.biologyEarned ?? 0 : 'N/A',
       g.totalEarnedWithBonus,
       g.baseTotal,
@@ -462,7 +484,9 @@ export function buildSubmissionsCsv(submissions: StoredSubmission[]): string {
       s.lockedOut ? 'Sí' : 'No',
       infDetail || 'Sin infracciones',
       openResponses,
-      s.student.level === '10-bio' ? 'N/A' : s.answers.bonus || '',
+      s.student.level === '10-bio' || s.student.level === '10-bio-isa'
+        ? 'N/A'
+        : s.answers.bonus || '',
     ];
   });
 

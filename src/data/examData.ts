@@ -1,6 +1,7 @@
 import type { LevelExamConfig, StandardAcademicLevel } from '../types/exam.ts';
 
 export const TEACHER_SECRET_CODE = '5531';
+export const CHEMISTRY_10_CLOSED = true;
 
 export const examData: Record<StandardAcademicLevel, LevelExamConfig> = {
   7: {

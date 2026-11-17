@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { signInWithPopup, signOut, User } from 'firebase/auth';
 import {
   ArrowDownUp,
   BarChart3,
+  Calendar,
   CalendarCheck,
   CalendarClock,
   CheckCircle2,
@@ -9,15 +11,19 @@ import {
   ChevronUp,
   Download,
   FileText,
+  LogIn,
   Trash2,
   Unlock,
+  Upload,
   Users,
   X,
   XCircle,
 } from 'lucide-react';
+import { ADMIN_EMAIL, auth, googleProvider, isVerifiedAdmin } from '../firebase';
 import { examData } from '../data/examData';
 import { biologyExamData } from '../data/biologyExamData';
 import { isabellaExamData } from '../data/isabellaExamData';
+import { isabellaBioExamData } from '../data/isabellaBioExamData';
 import { AcademicLevel, StandardAcademicLevel, StoredSubmission } from '../types/exam';
 import {
   evaluateFullSubmission,
@@ -29,12 +35,15 @@ import {
   deleteSubmissionRemote,
   downloadMasterCsv,
   downloadOfficialReport,
+  getCostaRicaDateKey,
+  importSubmissionsBackup,
   unlockEmailRemote,
 } from '../utils/storage';
 
 interface TeacherDashboardModalProps {
   open: boolean;
   adminCode: string;
+  firebaseUser: User | null;
   submissions: StoredSubmission[];
   biologyEarlyUnlocked: boolean;
   onToggleBiologyEarlyUnlock: (next: boolean) => Promise<void>;
@@ -59,6 +68,7 @@ interface GeneralItemStat {
 function getLevelDisplayName(level: AcademicLevel): string {
   if (level === '10-bio') return '10.° Biología';
   if (level === '10-quim-isa') return 'Química Isabella Antonino';
+  if (level === '10-bio-isa') return 'Biología Isabella Antonino';
   if (level === 10) return '10.° Química';
   return `${level}.° Año`;
 }
@@ -97,9 +107,10 @@ function buildGeneralStatsForLevel(
     return items;
   }
 
-  if (level === '10-quim-isa') {
+  if (level === '10-quim-isa' || level === '10-bio-isa') {
+    const isaCfg = level === '10-bio-isa' ? isabellaBioExamData : isabellaExamData;
     const items: GeneralItemStat[] = [];
-    isabellaExamData.selection.forEach((item, idx) => {
+    isaCfg.selection.forEach((item, idx) => {
       let correct = 0;
       for (const s of levelSubs) {
         if (s.answers.selection[idx] === item.correct) correct += 1;
@@ -115,7 +126,7 @@ function buildGeneralStatsForLevel(
         correctRate: Math.round((correct / count) * 1000) / 10,
       });
     });
-    isabellaExamData.matching1.forEach((item, idx) => {
+    isaCfg.matching1.forEach((item, idx) => {
       let correct = 0;
       for (const s of levelSubs) {
         const val = s.answers.matching[idx];
@@ -132,7 +143,7 @@ function buildGeneralStatsForLevel(
         correctRate: Math.round((correct / count) * 1000) / 10,
       });
     });
-    isabellaExamData.matching2.forEach((item, idx) => {
+    isaCfg.matching2.forEach((item, idx) => {
       let correct = 0;
       for (const s of levelSubs) {
         const val = s.answers.matching2?.[idx];
@@ -149,7 +160,7 @@ function buildGeneralStatsForLevel(
         correctRate: Math.round((correct / count) * 1000) / 10,
       });
     });
-    isabellaExamData.completes.forEach((item, idx) => {
+    isaCfg.completes.forEach((item, idx) => {
       let correct = 0;
       for (const s of levelSubs) {
         if (isIsabellaCompleteCorrect(s.answers.completes[idx] || '', item.acceptableAnswers)) {
@@ -237,6 +248,7 @@ function buildGeneralStatsForLevel(
 export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
   open,
   adminCode,
+  firebaseUser,
   submissions,
   biologyEarlyUnlocked,
   onToggleBiologyEarlyUnlock,
@@ -245,18 +257,28 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<'all' | AcademicLevel>('all');
+  const [filterDate, setFilterDate] = useState<string>('all');
   const [viewMode, setViewMode] = useState<AdminViewMode>('students');
   const [itemFilter, setItemFilter] = useState<ItemStatusFilter>('all');
   const [sortMostMissed, setSortMostMissed] = useState<boolean>(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [togglingBiology, setTogglingBiology] = useState(false);
+  const [connectingAdminGoogle, setConnectingAdminGoogle] = useState(false);
+  const [importingBackup, setImportingBackup] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const filtered = useMemo(
     () =>
-      filterLevel === 'all'
-        ? submissions
-        : submissions.filter((s) => s.student.level === filterLevel),
-    [submissions, filterLevel]
+      submissions.filter((s) => {
+        if (filterLevel !== 'all' && s.student.level !== filterLevel) {
+          return false;
+        }
+        if (filterDate !== 'all' && getCostaRicaDateKey(s.submittedAt) !== filterDate) {
+          return false;
+        }
+        return true;
+      }),
+    [submissions, filterLevel, filterDate]
   );
 
   const overallSummary = useMemo(() => {
@@ -283,7 +305,7 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
         const fullSubs = subValues.filter((v) => v >= 2).length;
         correctTotal += fullSubs;
         possibleItems += 30;
-      } else if (s.student.level === '10-quim-isa') {
+      } else if (s.student.level === '10-quim-isa' || s.student.level === '10-bio-isa') {
         const objEarned = g.selection + g.matching + (g.matching2 ?? 0) + g.completes;
         const objTotal =
           g.selectionTotal + g.matchingTotal + (g.matching2Total ?? 5) + g.completesTotal;
@@ -313,7 +335,15 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
   }, [filtered]);
 
   const groupedGeneralStats = useMemo(() => {
-    const levelsOrder: AcademicLevel[] = [7, 8, 9, 10, '10-quim-isa', '10-bio'];
+    const levelsOrder: AcademicLevel[] = [
+      7,
+      8,
+      9,
+      10,
+      '10-quim-isa',
+      '10-bio-isa',
+      '10-bio',
+    ];
     const targetLevels =
       filterLevel === 'all'
         ? levelsOrder.filter((lvl) => filtered.some((s) => s.student.level === lvl))
@@ -363,6 +393,62 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
     );
   };
 
+  const adminGoogleConnected = Boolean(firebaseUser && isVerifiedAdmin());
+
+  const handleConnectAdminGoogle = async () => {
+    setConnectingAdminGoogle(true);
+    try {
+      if (firebaseUser && !isVerifiedAdmin()) {
+        await signOut(auth);
+      }
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (cred.user.email?.toLowerCase() === ADMIN_EMAIL) {
+        setNotice(
+          'Sesión docente en la nube verificada. Sincronizando entregas permanentes de Firestore en tiempo real.'
+        );
+      } else {
+        setNotice(
+          `Inició sesión con ${cred.user.email ?? 'otra cuenta'}. Para consultar todas las entregas en la nube debe usar ${ADMIN_EMAIL}.`
+        );
+      }
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? '';
+      if (code === 'auth/popup-blocked') {
+        setNotice(
+          'El navegador bloqueó la ventana de Google. Permita ventanas emergentes e intente de nuevo.'
+        );
+      } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        setNotice('No se pudo verificar la cuenta docente con Google. Intente nuevamente.');
+      }
+    } finally {
+      setConnectingAdminGoogle(false);
+    }
+  };
+
+  const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImportingBackup(true);
+    try {
+      const text = await file.text();
+      const targetDate = filterDate !== 'all' ? filterDate : '2026-11-17';
+      const result = await importSubmissionsBackup(text, targetDate);
+      onUpdateSubmissions(result.submissions);
+      setNotice(
+        result.importedCount > 0
+          ? `Se importaron ${result.importedCount} entrega(s) con fecha ${targetDate}${
+              adminGoogleConnected ? ' y se guardaron permanentemente en Firestore.' : '.'
+            }`
+          : `No se encontraron entregas nuevas válidas con fecha ${targetDate} dentro del archivo seleccionado.`
+      );
+    } catch {
+      setNotice('El archivo seleccionado no tiene un formato de respaldo (.json o .csv) válido.');
+    } finally {
+      setImportingBackup(false);
+    }
+  };
+
   return (
     <div
       role="dialog"
@@ -402,7 +488,8 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                 { id: 8, label: '8.° Año' },
                 { id: 9, label: '9.° Año' },
                 { id: 10, label: '10.° Química' },
-                { id: '10-quim-isa', label: 'Isabella A.' },
+                { id: '10-quim-isa', label: 'Isabella Quím.' },
+                { id: '10-bio-isa', label: 'Isabella Bio.' },
                 { id: '10-bio', label: '10.° Biología' },
               ] as const
             ).map((tab) => (
@@ -422,6 +509,56 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setFilterDate('all')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  filterDate === 'all'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Todas las fechas
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterDate('2026-11-17')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+                  filterDate === '2026-11-17'
+                    ? 'bg-white text-blue-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Calendar className="w-3 h-3" aria-hidden="true" />
+                <span>17 nov 2026</span>
+              </button>
+              <input
+                type="date"
+                aria-label="Filtrar por fecha"
+                value={filterDate === 'all' ? '' : filterDate}
+                onChange={(e) => setFilterDate(e.target.value || 'all')}
+                className="px-2 py-0.5 text-xs bg-white border border-slate-200 rounded-md text-slate-700"
+              />
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.csv,application/json,text/csv"
+              onChange={(e) => void handleImportFileChange(e)}
+              className="hidden"
+            />
+            <button
+              type="button"
+              disabled={importingBackup}
+              onClick={() => fileInputRef.current?.click()}
+              className="min-h-[38px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Upload className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{importingBackup ? 'Importando...' : 'Importar (.json / .csv)'}</span>
+            </button>
+
             <button
               type="button"
               disabled={togglingBiology}
@@ -453,8 +590,8 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
             </button>
             <button
               type="button"
-              disabled={submissions.length === 0}
-              onClick={() => void downloadOfficialReport(adminCode)}
+              disabled={filtered.length === 0}
+              onClick={() => void downloadOfficialReport(adminCode, filtered)}
               className="min-h-[38px] px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 text-slate-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <FileText className="w-3.5 h-3.5" aria-hidden="true" />
@@ -462,8 +599,8 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
             </button>
             <button
               type="button"
-              disabled={submissions.length === 0}
-              onClick={() => void downloadMasterCsv(adminCode, submissions)}
+              disabled={filtered.length === 0}
+              onClick={() => void downloadMasterCsv(adminCode, filtered)}
               className="min-h-[38px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
@@ -558,6 +695,36 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
           </div>
         )}
 
+        {!adminGoogleConnected && (
+          <div className="mx-6 mt-4 p-4 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5 text-xs">
+              <p className="font-bold text-amber-950">
+                Sincronización permanente con la base de datos en la nube
+              </p>
+              <p className="text-amber-900">
+                {firebaseUser
+                  ? `Actualmente inició sesión con ${firebaseUser.email}. Conéctese con la cuenta docente (${ADMIN_EMAIL}) para ver todas las entregas guardadas en Firestore.`
+                  : `Conéctese con su cuenta Google docente (${ADMIN_EMAIL}) para cargar en tiempo real todas las evaluaciones enviadas desde cualquier dispositivo.`}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={connectingAdminGoogle}
+              onClick={() => void handleConnectAdminGoogle()}
+              className="min-h-[38px] px-4 py-2 rounded-xl bg-amber-900 hover:bg-amber-950 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>
+                {connectingAdminGoogle
+                  ? 'Conectando...'
+                  : firebaseUser
+                  ? 'Cambiar a cuenta docente'
+                  : 'Conectar cuenta docente'}
+              </span>
+            </button>
+          </div>
+        )}
+
         {notice && (
           <div className="mx-6 mt-4 px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800">
             {notice}
@@ -649,7 +816,10 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
             filtered.map((sub) => {
               const isOpen = expandedId === sub.id;
               const isBio = sub.student.level === '10-bio';
-              const isIsa = sub.student.level === '10-quim-isa';
+              const isIsa =
+                sub.student.level === '10-quim-isa' || sub.student.level === '10-bio-isa';
+              const isaCfg =
+                sub.student.level === '10-bio-isa' ? isabellaBioExamData : isabellaExamData;
               const lvlLabel = getLevelDisplayName(sub.student.level);
               const grade =
                 sub.gradeBreakdown ?? evaluateFullSubmission(sub.student.level, sub.answers);
@@ -933,12 +1103,14 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                                 {grade.development} / {grade.developmentTotal}
                               </div>
                             </div>
-                            <div className="bg-white border border-slate-200 rounded-lg p-3">
-                              <span className="text-slate-500">VI. Opcional</span>
-                              <div className="font-mono text-sm font-bold text-emerald-700 mt-0.5">
-                                +{grade.bonus} / {grade.bonusTotal}
+                            {sub.student.level === '10-quim-isa' && (
+                              <div className="bg-white border border-slate-200 rounded-lg p-3">
+                                <span className="text-slate-500">VI. Opcional</span>
+                                <div className="font-mono text-sm font-bold text-emerald-700 mt-0.5">
+                                  +{grade.bonus} / {grade.bonusTotal}
+                                </div>
                               </div>
-                            </div>
+                            )}
                           </div>
 
                           <div className="space-y-2">
@@ -946,7 +1118,7 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                               I Parte: Selección Única ({grade.selection}/{grade.selectionTotal} correctas)
                             </div>
                             <div className="space-y-1.5">
-                              {isabellaExamData.selection.map((item, idx) => {
+                              {isaCfg.selection.map((item, idx) => {
                                 const chosen = sub.answers.selection[idx];
                                 const isCorrect = chosen === item.correct;
                                 if (itemFilter === 'correct' && !isCorrect) return null;
@@ -998,7 +1170,7 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                               II Parte: Asocie 1 ({grade.matching}/{grade.matchingTotal} correctas)
                             </div>
                             <div className="space-y-1.5">
-                              {isabellaExamData.matching1.map((item, idx) => {
+                              {isaCfg.matching1.map((item, idx) => {
                                 const val = sub.answers.matching[idx];
                                 const chosenIdx =
                                   val !== '' && val !== undefined ? Number(val) : null;
@@ -1052,7 +1224,7 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                               III Parte: Asocie 2 ({grade.matching2 ?? 0}/{grade.matching2Total ?? 5} correctas)
                             </div>
                             <div className="space-y-1.5">
-                              {isabellaExamData.matching2.map((item, idx) => {
+                              {isaCfg.matching2.map((item, idx) => {
                                 const val = sub.answers.matching2?.[idx];
                                 const chosenIdx =
                                   val !== '' && val !== undefined ? Number(val) : null;
@@ -1106,7 +1278,7 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                               IV Parte: Completes ({grade.completes}/{grade.completesTotal} correctas)
                             </div>
                             <div className="space-y-1.5">
-                              {isabellaExamData.completes.map((item, idx) => {
+                              {isaCfg.completes.map((item, idx) => {
                                 const rawAns = sub.answers.completes[idx] || '';
                                 const isCorrect = isIsabellaCompleteCorrect(
                                   rawAns,
@@ -1160,7 +1332,11 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                             </div>
                             <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-1">
                               <div className="flex items-center justify-between font-semibold text-slate-700">
-                                <span>Ventajas de las energías limpias</span>
+                                <span>
+                                  {sub.student.level === '10-bio-isa'
+                                    ? 'Importancias de la fotosíntesis'
+                                    : 'Ventajas de las energías limpias'}
+                                </span>
                                 <span className="font-mono text-teal-700">
                                   {grade.development} / {grade.developmentTotal} pts
                                 </span>
@@ -1171,17 +1347,19 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                             </div>
                           </div>
 
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between font-semibold text-slate-800">
-                              <span>VI Parte: Pregunta Opcional (+1 pt)</span>
-                              <span className="font-mono text-emerald-700">
-                                +{grade.bonus} / {grade.bonusTotal} pt
-                              </span>
+                          {sub.student.level === '10-quim-isa' && (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between font-semibold text-slate-800">
+                                <span>VI Parte: Pregunta Opcional (+1 pt)</span>
+                                <span className="font-mono text-emerald-700">
+                                  +{grade.bonus} / {grade.bonusTotal} pt
+                                </span>
+                              </div>
+                              <div className="bg-white border border-slate-200 rounded-lg p-3 text-slate-800 whitespace-pre-wrap">
+                                {sub.answers.bonus || 'Omitida por el estudiante.'}
+                              </div>
                             </div>
-                            <div className="bg-white border border-slate-200 rounded-lg p-3 text-slate-800 whitespace-pre-wrap">
-                              {sub.answers.bonus || 'Omitida por el estudiante.'}
-                            </div>
-                          </div>
+                          )}
                         </>
                       ) : stdConfig ? (
                         <>

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TEACHER_SECRET_CODE, examData } from './data/examData';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, isVerifiedAdmin } from './firebase';
+import { CHEMISTRY_10_CLOSED, TEACHER_SECRET_CODE, examData } from './data/examData';
 import { biologyExamData } from './data/biologyExamData';
 import { isabellaExamData } from './data/isabellaExamData';
+import { isabellaBioExamData } from './data/isabellaBioExamData';
 import {
   BiologyModuleId,
   BiologySubmittedMap,
@@ -30,6 +33,8 @@ import {
   setActiveDraftEmail,
   setBiologyEarlyUnlockLocal,
   setBiologyEarlyUnlockRemote,
+  subscribeAdminSubmissions,
+  subscribePlatformSettings,
   submitAndGradeExam,
   unlockEmailRemote,
 } from './utils/storage';
@@ -78,7 +83,14 @@ const INITIAL_ISABELLA_SUBMITTED: IsabellaSubmittedMap = {
 };
 
 export default function App() {
-  const [initialDraft] = useState(() => getActiveExamDraft());
+  const [initialDraft] = useState(() => {
+    const draft = getActiveExamDraft();
+    if (draft && CHEMISTRY_10_CLOSED && draft.student.level === 10) {
+      setActiveDraftEmail(null);
+      return null;
+    }
+    return draft;
+  });
 
   const [view, setView] = useState<AppView>(() => (initialDraft ? 'exam' : 'welcome'));
   const [student, setStudent] = useState<StudentSession | null>(
@@ -118,6 +130,9 @@ export default function App() {
   const [unlockNotice, setUnlockNotice] = useState<string | null>(null);
   const [biologyEarlyUnlocked, setBiologyEarlyUnlocked] = useState(false);
 
+  // Firebase Authentication state
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(() => auth.currentUser);
+
   // Submissions history
   const [lastSubmission, setLastSubmission] = useState<StoredSubmission | null>(null);
   const [submissions, setSubmissions] = useState<StoredSubmission[]>(() =>
@@ -137,10 +152,36 @@ export default function App() {
   });
 
   useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+    });
+    return unsubscribeAuth;
+  }, []);
+
+  useEffect(() => {
     void fetchBiologyStatus().then((status) => {
       setBiologyEarlyUnlocked(status.earlyUnlocked);
     });
+    const unsubscribeSettings = subscribePlatformSettings(
+      ({ biologyEarlyUnlocked: early }) => {
+        setBiologyEarlyUnlocked(early);
+      }
+    );
+    return unsubscribeSettings;
   }, []);
+
+  useEffect(() => {
+    if (!teacherPanelOpen || !firebaseUser || !isVerifiedAdmin()) {
+      return;
+    }
+    const unsubscribeAdmin = subscribeAdminSubmissions((merged) => {
+      setSubmissions(merged);
+    });
+    if (verifiedAdminCode) {
+      void fetchAdminSubmissions(verifiedAdminCode).then(setSubmissions);
+    }
+    return unsubscribeAdmin;
+  }, [teacherPanelOpen, firebaseUser, verifiedAdminCode]);
 
   // Persist exam progress continuously so lockouts or reloads never lose work
   useEffect(() => {
@@ -394,6 +435,9 @@ export default function App() {
   }, []);
 
   const handleStartExam = (newStudent: StudentSession) => {
+    if (CHEMISTRY_10_CLOSED && newStudent.level === 10) {
+      return;
+    }
     const savedDraft = getExamDraft(newStudent.email);
     const hasMatchingDraft =
       savedDraft !== null && savedDraft.student.level === newStudent.level;
@@ -614,6 +658,7 @@ export default function App() {
         {view === 'welcome' && (
           <WelcomeView
             biologyUnlockedOverride={biologyEarlyUnlocked}
+            firebaseUser={firebaseUser}
             onStartExam={handleStartExam}
             onOpenTeacherAccess={() => {
               setSecretModalMode('default');
@@ -643,27 +688,32 @@ export default function App() {
           />
         )}
 
-        {view === 'exam' && student && student.level === '10-quim-isa' && (
-          <IsabellaWorkspace
-            student={student}
-            config={isabellaExamData}
-            answers={answers}
-            sectionSubmitted={isabellaSubmitted}
-            infractionCount={infractions.length}
-            onUpdateAnswer={handleUpdateAnswer}
-            onLockSection={handleLockIsabellaSection}
-            onSubmitFullExam={() => void handleSubmitFullExam()}
-            onOpenTeacherModal={() => {
-              setSecretModalMode('default');
-              setSecretModalOpen(true);
-            }}
-          />
-        )}
+        {view === 'exam' &&
+          student &&
+          (student.level === '10-quim-isa' || student.level === '10-bio-isa') && (
+            <IsabellaWorkspace
+              student={student}
+              config={
+                student.level === '10-bio-isa' ? isabellaBioExamData : isabellaExamData
+              }
+              answers={answers}
+              sectionSubmitted={isabellaSubmitted}
+              infractionCount={infractions.length}
+              onUpdateAnswer={handleUpdateAnswer}
+              onLockSection={handleLockIsabellaSection}
+              onSubmitFullExam={() => void handleSubmitFullExam()}
+              onOpenTeacherModal={() => {
+                setSecretModalMode('default');
+                setSecretModalOpen(true);
+              }}
+            />
+          )}
 
         {view === 'exam' &&
           student &&
           student.level !== '10-bio' &&
-          student.level !== '10-quim-isa' && (
+          student.level !== '10-quim-isa' &&
+          student.level !== '10-bio-isa' && (
             <ExamWorkspace
               student={student}
               config={examData[student.level]}
@@ -720,6 +770,7 @@ export default function App() {
       <TeacherDashboardModal
         open={teacherPanelOpen}
         adminCode={verifiedAdminCode}
+        firebaseUser={firebaseUser}
         submissions={submissions}
         biologyEarlyUnlocked={biologyEarlyUnlocked}
         onToggleBiologyEarlyUnlock={handleToggleBiologyEarlyUnlock}

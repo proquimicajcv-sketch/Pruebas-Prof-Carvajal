@@ -1,0 +1,183 @@
+{
+  "entities": {
+    "Submission": {
+      "title": "Submission",
+      "description": "Registro permanente de una evaluación científica completada o bloqueada por integridad académica.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador único de la entrega.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario que registró la entrega.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo institucional del estudiante (@sps.ed.cr).",
+          "minLength": 11,
+          "maxLength": 160,
+          "pattern": "^[^@\\s]+@sps\\.ed\\.cr$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Nombre completo del estudiante.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "studentLevel": {
+          "type": "string",
+          "description": "Nivel académico evaluado.",
+          "enum": ["7", "8", "9", "10", "10-bio", "10-quim-isa", "10-bio-isa"]
+        },
+        "submittedAt": {
+          "type": "string",
+          "description": "Fecha y hora ISO de entrega.",
+          "minLength": 10,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca temporal oficial del servidor Firestore."
+        },
+        "lockedOut": {
+          "type": "boolean",
+          "description": "Indica si la sesión fue bloqueada por superar 3 infracciones."
+        },
+        "student": {
+          "type": "object",
+          "description": "Metadatos del estudiante (email, name, level)."
+        },
+        "answers": {
+          "type": "object",
+          "description": "Respuestas estructuradas por apartado."
+        },
+        "infractions": {
+          "type": "array",
+          "description": "Registro acotado de infracciones detectadas."
+        },
+        "objectiveScore": {
+          "type": "object",
+          "description": "Desglose objetivo de aciertos."
+        },
+        "gradeBreakdown": {
+          "type": "object",
+          "description": "Calificación detallada por sección y nota porcentual final."
+        }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "studentEmail",
+        "studentName",
+        "studentLevel",
+        "submittedAt",
+        "createdAt",
+        "lockedOut",
+        "student",
+        "answers",
+        "infractions",
+        "objectiveScore",
+        "gradeBreakdown"
+      ]
+    },
+    "ExamLock": {
+      "title": "ExamLock",
+      "description": "Estado de bloqueo de acceso por correo institucional.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario bloqueado.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo institucional normalizado.",
+          "minLength": 11,
+          "maxLength": 160,
+          "pattern": "^[^@\\s]+@sps\\.ed\\.cr$"
+        },
+        "locked": {
+          "type": "boolean",
+          "description": "Indica si el correo tiene un bloqueo activo."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca temporal oficial del servidor Firestore."
+        }
+      },
+      "required": ["ownerUid", "email", "locked", "updatedAt"]
+    },
+    "PlatformSettings": {
+      "title": "PlatformSettings",
+      "description": "Configuración global de apertura anticipada y cierre de evaluaciones.",
+      "type": "object",
+      "properties": {
+        "biologyEarlyUnlocked": {
+          "type": "boolean",
+          "description": "Habilita anticipadamente las pruebas programadas (7.°, 8.°, 9.° y 10.° Biología)."
+        },
+        "chemistry10Closed": {
+          "type": "boolean",
+          "description": "Mantiene cerrada la evaluación regular de 10.° Química."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca temporal oficial del servidor Firestore."
+        }
+      },
+      "required": ["biologyEarlyUnlocked", "chemistry10Closed", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Usuario administrador docente autorizado.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/submissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/Submission" },
+      "description": "Entregas permanentes de evaluaciones científicas."
+    },
+    "/exam_locks/{lockId}": {
+      "schema": { "$ref": "#/entities/ExamLock" },
+      "description": "Bloqueos por correo institucional tras envío o infracciones."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSettings" },
+      "description": "Configuración global de habilitación y cierre de pruebas."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Lista de administradores docentes autorizados."
+    }
+  }
+}

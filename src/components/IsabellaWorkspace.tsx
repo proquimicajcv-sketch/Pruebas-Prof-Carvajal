@@ -23,13 +23,12 @@ interface IsabellaWorkspaceProps {
   onOpenTeacherModal: () => void;
 }
 
-const TABS: { id: IsabellaSectionId; label: string; pts: string }[] = [
+const BASE_TABS: { id: IsabellaSectionId; label: string; pts: string }[] = [
   { id: 'selection', label: 'I. Selección Única', pts: '20 pts' },
   { id: 'matching1', label: 'II. Asocie 1', pts: '5 pts' },
   { id: 'matching2', label: 'III. Asocie 2', pts: '5 pts' },
   { id: 'completes', label: 'IV. Completes', pts: '5 pts' },
   { id: 'development', label: 'V. Desarrollo', pts: '2 pts' },
-  { id: 'bonus', label: 'VI. Opcional', pts: '+1 pt' },
 ];
 
 export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
@@ -43,6 +42,24 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
   onSubmitFullExam,
   onOpenTeacherModal,
 }) => {
+  const tabs = useMemo(
+    () =>
+      config.bonus
+        ? [...BASE_TABS, { id: 'bonus' as IsabellaSectionId, label: 'VI. Opcional', pts: `+${config.bonus.value} pt` }]
+        : BASE_TABS,
+    [config.bonus]
+  );
+
+  const totalPoints = useMemo(
+    () =>
+      config.selection.length +
+      config.matching1.length +
+      config.matching2.length +
+      config.completes.length +
+      config.development.value,
+    [config]
+  );
+
   const [activeTab, setActiveTab] = useState<IsabellaSectionId>('selection');
   const [confirmSection, setConfirmSection] = useState<IsabellaSectionId | null>(null);
   const [confirmFinalSubmit, setConfirmFinalSubmit] = useState(false);
@@ -290,7 +307,7 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           </div>
           <div className="space-y-1 text-xs sm:text-sm text-teal-950 leading-relaxed">
             <p className="font-bold">
-              {config.subtitle} · Valor total: 37 puntos
+              {config.subtitle} · Valor total: {totalPoints} puntos
             </p>
             <p className="text-teal-900">
               Lea cuidadosamente cada pregunta. Seleccione o responda según se le indica de forma
@@ -304,7 +321,7 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           aria-label="Secciones de la prueba"
           className="bg-white border border-slate-200 rounded-2xl p-1.5 flex items-center gap-1.5 overflow-x-auto"
         >
-          {TABS.map((tab) => {
+          {tabs.map((tab) => {
             const active = tab.id === activeTab;
             const locked = sectionSubmitted[tab.id];
             return (
@@ -361,8 +378,10 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
             <div>
               <h2 className="text-xl font-bold text-slate-900">
                 {activeTab === 'selection' && 'I Parte: Selección Única'}
-                {activeTab === 'matching1' && 'II Parte: Asocie 1 (Fenómenos de Luz y Energía)'}
-                {activeTab === 'matching2' && 'III Parte: Asocie 2 (Clasificación de Energías)'}
+                {activeTab === 'matching1' &&
+                  (config.matching1Title || 'II Parte: Asocie 1')}
+                {activeTab === 'matching2' &&
+                  (config.matching2Title || 'III Parte: Asocie 2')}
                 {activeTab === 'completes' && 'IV Parte: Completes'}
                 {activeTab === 'development' && 'V Parte: Desarrollo'}
                 {activeTab === 'bonus' && 'VI Parte: Pregunta Opcional'}
@@ -373,11 +392,11 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
                 {activeTab === 'matching1' &&
                   'Valor: 5 puntos (1 punto cada acierto). Relacione cada concepto de la Columna A con su descripción en la Columna B.'}
                 {activeTab === 'matching2' &&
-                  'Valor: 5 puntos (1 punto cada acierto). Relacione cada tipo o fuente de energía con su clasificación correcta.'}
+                  'Valor: 5 puntos (1 punto cada acierto). Relacione cada elemento de la Columna A con su clasificación en la Columna B.'}
                 {activeTab === 'completes' &&
                   'Valor: 5 puntos (1 punto cada respuesta). Complete los espacios en MAYÚSCULAS y sin tildes.'}
                 {activeTab === 'development' &&
-                  'Valor: 2 puntos (1 punto por cada ventaja válida explicada). Responda de forma clara y ordenada.'}
+                  'Valor: 2 puntos (1 punto por cada razón válida explicada). Responda de forma clara y ordenada.'}
                 {activeTab === 'bonus' &&
                   'Valor: +1 punto adicional opcional. Si no desea responderla, no resta puntos.'}
               </p>
@@ -407,9 +426,9 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
                 const isMissing = highlightMissing && chosen === undefined;
                 return (
                   <React.Fragment key={idx}>
-                    {idx === 0 && renderFigure('sel-optics', config.images.optics)}
-                    {idx === 4 && renderFigure('sel-renewable', config.images.renewable)}
-                    {idx === 13 && renderFigure('sel-comparison', config.images.comparison)}
+                    {idx === 0 && renderFigure('sel-sec1', config.images.section1)}
+                    {idx === 8 && renderFigure('sel-sec2', config.images.section2)}
+                    {idx === 15 && renderFigure('sel-sec3', config.images.section3)}
                     <fieldset
                       id={`isa-sel-card-${idx}`}
                       disabled={isLocked}
@@ -468,8 +487,8 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           {activeTab === 'matching1' && (
             <div className="space-y-5">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {renderFigure('m1-optics', config.images.optics, 'max-h-[200px]')}
-                {renderFigure('m1-renewable', config.images.renewable, 'max-h-[200px]')}
+                {renderFigure('m1-sec1', config.images.section1, 'max-h-[200px]')}
+                {renderFigure('m1-sec2', config.images.section2, 'max-h-[200px]')}
               </div>
 
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1.5 text-xs sm:text-sm text-slate-700">
@@ -539,7 +558,7 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           {/* III. ASOCIE 2 */}
           {activeTab === 'matching2' && (
             <div className="space-y-5">
-              {renderFigure('m2-comparison', config.images.comparison)}
+              {renderFigure('m2-sec3', config.images.section3)}
 
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-1.5 text-xs sm:text-sm text-slate-700">
                 <p className="font-bold text-slate-900">Columna B (Clasificaciones):</p>
@@ -609,8 +628,8 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           {activeTab === 'completes' && (
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {renderFigure('cmp-optics', config.images.optics, 'max-h-[190px]')}
-                {renderFigure('cmp-comparison', config.images.comparison, 'max-h-[190px]')}
+                {renderFigure('cmp-sec2', config.images.section2, 'max-h-[190px]')}
+                {renderFigure('cmp-sec3', config.images.section3, 'max-h-[190px]')}
               </div>
 
               {config.completes.map((item, idx) => {
@@ -661,7 +680,7 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           {/* V. DESARROLLO */}
           {activeTab === 'development' && (
             <div className="space-y-5">
-              {renderFigure('dev-renewable', config.images.renewable)}
+              {renderFigure('dev-sec2', config.images.section2)}
 
               <div className="p-4 sm:p-5 rounded-xl bg-teal-50/70 border border-teal-200 text-sm text-slate-800 leading-relaxed">
                 {config.development.context}
@@ -707,9 +726,9 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
           )}
 
           {/* VI. OPCIONAL (+1 pt) */}
-          {activeTab === 'bonus' && (
+          {activeTab === 'bonus' && config.bonus && (
             <div className="space-y-5">
-              {renderFigure('bonus-comparison', config.images.comparison, 'max-h-[220px]')}
+              {renderFigure('bonus-sec3', config.images.section3, 'max-h-[220px]')}
 
               <div className="p-4 sm:p-5 rounded-xl border border-slate-200 bg-slate-50 space-y-3">
                 <div className="flex items-start justify-between gap-4">
@@ -771,7 +790,7 @@ export const IsabellaWorkspace: React.FC<IsabellaWorkspaceProps> = ({
       <ConfirmDialog
         open={confirmFinalSubmit}
         title="¿Finalizar y entregar su prueba?"
-        description={`Ha respondido ${progress.answered} de ${progress.total} ítems (37 puntos totales). Al entregar, sus respuestas quedarán registradas para revisión docente.`}
+        description={`Ha respondido ${progress.answered} de ${progress.total} ítems (${totalPoints} puntos totales). Al entregar, sus respuestas quedarán registradas para revisión docente.`}
         confirmLabel="Entregar Prueba Definitiva"
         tone="emerald"
         onConfirm={() => {

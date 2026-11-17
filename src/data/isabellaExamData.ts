@@ -5,20 +5,22 @@ export const isabellaExamData: IsabellaExamConfig = {
   title: 'Química Isabella Antonino',
   subtitle: 'Prueba de Química 10.° Año (Adaptación Significativa)',
   themeColor: '#0d9488',
+  matching1Title: 'II Parte: Asocie 1 (Fenómenos de Luz y Energía)',
+  matching2Title: 'III Parte: Asocie 2 (Clasificación de Energías)',
   images: {
-    optics: {
+    section1: {
       path: '/src/assets/images/isa_light_reflection_refraction_1794857898449.jpg',
       alt: 'Ilustración educativa de reflexión de la luz en un espejo y refracción con un lápiz en agua y una lupa',
       caption:
         'Figura 1. Reflexión de la luz en un espejo (izquierda) y refracción de la luz con lápiz en agua y lupa (derecha).',
     },
-    renewable: {
+    section2: {
       path: '/src/assets/images/isa_clean_renewable_energies_1794857899760.jpg',
       alt: 'Ilustración de energías limpias y renovables en Costa Rica: hidroeléctrica, eólica, solar y geotérmica',
       caption:
         'Figura 2. Fuentes principales de energía limpia y renovable: hidroeléctrica, eólica, solar y geotérmica volcánica.',
     },
-    comparison: {
+    section3: {
       path: '/src/assets/images/isa_energy_comparison_clean_fossil_1794857898437.jpg',
       alt: 'Comparación visual entre energías limpias renovables y combustibles fósiles contaminantes',
       caption:

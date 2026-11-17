@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { InfractionEvent, StoredSubmission, StudentSession, UserAnswers } from './src/types/exam.ts';
-import { TEACHER_SECRET_CODE } from './src/data/examData.ts';
+import { CHEMISTRY_10_CLOSED, TEACHER_SECRET_CODE } from './src/data/examData.ts';
 import { BIOLOGY_UNLOCK_ISO, biologyExamData, isBiologyScheduledOpen } from './src/data/biologyExamData.ts';
 import { buildSubmissionsCsv, evaluateFullSubmission } from './src/utils/grading.ts';
 
@@ -101,16 +101,21 @@ function buildOfficialHtmlReport(submissions: StoredSubmission[]): string {
           ? '10.° Biología'
           : s.student.level === '10-quim-isa'
           ? 'Química Isabella Antonino'
+          : s.student.level === '10-bio-isa'
+          ? 'Biología Isabella Antonino'
           : s.student.level === 10
           ? '10.° Química'
           : `${s.student.level}.° Año`;
       const isBio = s.student.level === '10-bio';
-      const isIsa = s.student.level === '10-quim-isa';
+      const isIsa =
+        s.student.level === '10-quim-isa' || s.student.level === '10-bio-isa';
       const matchingCell = isBio
         ? '—'
         : isIsa
         ? `${g.matching + (g.matching2 ?? 0)}/${g.matchingTotal + (g.matching2Total ?? 0)}`
         : `${g.matching}/${g.matchingTotal}`;
+      const bonusCell =
+        isBio || s.student.level === '10-bio-isa' ? '—' : `+${g.bonus}`;
       return `
       <tr>
         <td>${escapeHtml(s.student.name)}</td>
@@ -121,7 +126,7 @@ function buildOfficialHtmlReport(submissions: StoredSubmission[]): string {
         <td>${matchingCell}</td>
         <td>${isBio ? '—' : `${g.completes}/${g.completesTotal}`}</td>
         <td>${isBio ? `${g.biologyEarned ?? 0}/60 (Taller)` : `${g.development}/${g.developmentTotal}`}</td>
-        <td>${isBio ? '—' : `+${g.bonus}`}</td>
+        <td>${bonusCell}</td>
         <td><strong>${g.totalEarnedWithBonus}/${g.baseTotal}</strong></td>
         <td><strong>${g.finalPercentage.toFixed(1)}%</strong></td>
         <td>${s.infractions.length}${s.lockedOut ? ' (Bloqueado)' : ''}</td>
@@ -137,6 +142,8 @@ function buildOfficialHtmlReport(submissions: StoredSubmission[]): string {
           ? '10.° Biología'
           : s.student.level === '10-quim-isa'
           ? 'Química Isabella Antonino'
+          : s.student.level === '10-bio-isa'
+          ? 'Biología Isabella Antonino'
           : s.student.level === 10
           ? '10.° Química'
           : `${s.student.level}.° Año`;
@@ -167,13 +174,17 @@ function buildOfficialHtmlReport(submissions: StoredSubmission[]): string {
         </div>`;
       }
 
-      if (s.student.level === '10-quim-isa') {
+      if (s.student.level === '10-quim-isa' || s.student.level === '10-bio-isa') {
         return `
         <div class="card">
           <h3>${idx + 1}. ${escapeHtml(s.student.name)} — ${escapeHtml(levelName)} (${g.finalPercentage.toFixed(1)}%)</h3>
           <p class="meta">Correo: ${escapeHtml(s.student.email)} · Fecha: ${escapeHtml(new Date(s.submittedAt).toLocaleString('es-CR'))} · Infracciones: ${s.infractions.length}</p>
           <p><strong>V. Desarrollo (${g.development}/2 pts):</strong> ${escapeHtml(s.answers.development[0] || 'Sin respuesta')}</p>
-          <p><strong>VI. Opcional (+${g.bonus}/1 pt):</strong> ${escapeHtml(s.answers.bonus || 'Omitida')}</p>
+          ${
+            s.student.level === '10-quim-isa'
+              ? `<p><strong>VI. Opcional (+${g.bonus}/1 pt):</strong> ${escapeHtml(s.answers.bonus || 'Omitida')}</p>`
+              : ''
+          }
         </div>`;
       }
 
@@ -409,8 +420,26 @@ async function startServer(): Promise<void> {
       return;
     }
 
-    if (body.student.level === '10-quim-isa' && email !== 'iantonino@sps.ed.cr') {
+    if (
+      (body.student.level === '10-quim-isa' || body.student.level === '10-bio-isa') &&
+      email !== 'iantonino@sps.ed.cr'
+    ) {
       res.status(403).json({ error: 'Evaluación no disponible para este usuario.' });
+      return;
+    }
+
+    if (body.student.level === 10 && CHEMISTRY_10_CLOSED) {
+      res.status(403).json({ error: 'La prueba de 10.° Química se encuentra cerrada.' });
+      return;
+    }
+
+    const isScheduledLevel =
+      body.student.level === 7 ||
+      body.student.level === 8 ||
+      body.student.level === 9 ||
+      body.student.level === '10-bio';
+    if (isScheduledLevel && !isBiologyScheduledOpen() && !readBiologyEarlyUnlock()) {
+      res.status(403).json({ error: 'Esta evaluación aún no se encuentra habilitada.' });
       return;
     }
 

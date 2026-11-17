@@ -1,0 +1,224 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'proquimicajcv@icloud.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidSubmission(data) {
+      return data.keys().hasAll([
+        'id',
+        'ownerUid',
+        'studentEmail',
+        'studentName',
+        'studentLevel',
+        'submittedAt',
+        'createdAt',
+        'lockedOut',
+        'student',
+        'answers',
+        'infractions',
+        'objectiveScore',
+        'gradeBreakdown'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'ownerUid',
+        'studentEmail',
+        'studentName',
+        'studentLevel',
+        'submittedAt',
+        'createdAt',
+        'lockedOut',
+        'student',
+        'answers',
+        'infractions',
+        'objectiveScore',
+        'gradeBreakdown'
+      ]) &&
+      data.id is string &&
+      data.id.size() >= 1 &&
+      data.id.size() <= 128 &&
+      data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerUid is string &&
+      data.ownerUid.size() >= 1 &&
+      data.ownerUid.size() <= 128 &&
+      data.ownerUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.studentEmail is string &&
+      data.studentEmail.size() >= 11 &&
+      data.studentEmail.size() <= 160 &&
+      data.studentEmail.matches('^[^@\\s]+@sps\\.ed\\.cr$') &&
+      data.studentName is string &&
+      data.studentName.size() >= 3 &&
+      data.studentName.size() <= 160 &&
+      data.studentLevel is string &&
+      data.studentLevel in ['7', '8', '9', '10', '10-bio', '10-quim-isa', '10-bio-isa'] &&
+      ((data.studentLevel != '10-quim-isa' && data.studentLevel != '10-bio-isa') || data.studentEmail == 'iantonino@sps.ed.cr') &&
+      data.submittedAt is string &&
+      data.submittedAt.size() >= 10 &&
+      data.submittedAt.size() <= 40 &&
+      data.createdAt is timestamp &&
+      data.lockedOut is bool &&
+      data.student is map &&
+      data.student.keys().hasAll(['email', 'name', 'level']) &&
+      data.student.keys().hasOnly(['email', 'name', 'level']) &&
+      data.student.email is string &&
+      data.student.email.size() <= 160 &&
+      data.student.name is string &&
+      data.student.name.size() >= 3 &&
+      data.student.name.size() <= 160 &&
+      data.answers is map &&
+      data.answers.keys().size() <= 12 &&
+      data.infractions is list &&
+      data.infractions.size() <= 10 &&
+      (
+        data.infractions.size() == 0 ||
+        (
+          data.infractions[0] is map &&
+          data.infractions[0].keys().hasAll(['timestamp', 'reason']) &&
+          data.infractions[0].keys().hasOnly(['timestamp', 'reason']) &&
+          data.infractions[0].timestamp is string &&
+          data.infractions[0].timestamp.size() <= 40 &&
+          data.infractions[0].reason is string &&
+          data.infractions[0].reason.size() <= 200
+        )
+      ) &&
+      data.objectiveScore is map &&
+      data.objectiveScore.keys().size() <= 12 &&
+      data.gradeBreakdown is map &&
+      data.gradeBreakdown.keys().size() <= 20;
+    }
+
+    function isValidExamLock(data) {
+      return data.keys().hasAll(['ownerUid', 'email', 'locked', 'updatedAt']) &&
+      data.keys().hasOnly(['ownerUid', 'email', 'locked', 'updatedAt']) &&
+      data.ownerUid is string &&
+      data.ownerUid.size() >= 1 &&
+      data.ownerUid.size() <= 128 &&
+      data.ownerUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.email is string &&
+      data.email.size() >= 11 &&
+      data.email.size() <= 160 &&
+      data.email.matches('^[^@\\s]+@sps\\.ed\\.cr$') &&
+      data.locked is bool &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidPlatformSettings(data) {
+      return data.keys().hasAll(['biologyEarlyUnlocked', 'chemistry10Closed', 'updatedAt']) &&
+      data.keys().hasOnly(['biologyEarlyUnlocked', 'chemistry10Closed', 'updatedAt']) &&
+      data.biologyEarlyUnlocked is bool &&
+      data.chemistry10Closed is bool &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['email', 'createdAt']) &&
+      data.keys().hasOnly(['email', 'createdAt']) &&
+      data.email is string &&
+      data.email.size() >= 5 &&
+      data.email.size() <= 160 &&
+      data.createdAt is timestamp;
+    }
+
+    match /submissions/{submissionId} {
+      allow get: if isAdmin() || (isSignedIn() && isValidId(submissionId) && resource != null && existing().ownerUid == request.auth.uid);
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isSignedIn() &&
+        isValidId(submissionId) &&
+        isValidSubmission(incoming()) &&
+        incoming().id == submissionId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (isAdmin() || incoming().studentLevel != '10');
+      allow update: if isAdmin() &&
+        isValidId(submissionId) &&
+        isValidSubmission(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(submissionId);
+    }
+
+    match /exam_locks/{lockId} {
+      allow get: if isAdmin() || (isSignedIn() && isValidId(lockId) && (resource == null || existing().ownerUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isSignedIn() &&
+        isValidId(lockId) &&
+        isValidExamLock(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().locked == true &&
+        incoming().updatedAt == request.time;
+      allow update: if (
+        isAdmin() &&
+        isValidId(lockId) &&
+        isValidExamLock(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().email == existing().email &&
+        incoming().updatedAt == request.time
+      ) || (
+        isSignedIn() &&
+        isValidId(lockId) &&
+        isValidExamLock(incoming()) &&
+        existing().ownerUid == request.auth.uid &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().email == existing().email &&
+        incoming().locked == true &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['locked', 'updatedAt'])
+      );
+      allow delete: if isAdmin() && isValidId(lockId);
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'platform';
+      allow list: if false;
+      allow create: if isAdmin() &&
+        isValidId(settingId) &&
+        settingId == 'platform' &&
+        isValidPlatformSettings(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(settingId) &&
+        settingId == 'platform' &&
+        isValidPlatformSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['biologyEarlyUnlocked', 'chemistry10Closed', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /admins/{uid} {
+      allow get: if isAdmin() && isValidId(uid);
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(uid) &&
+        isValidAdminUser(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isAdmin() && isValidId(uid);
+    }
+  }
+}

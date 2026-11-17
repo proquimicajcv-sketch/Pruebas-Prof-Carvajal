@@ -14,6 +14,8 @@ export const SubmittedView: React.FC<SubmittedViewProps> = ({ submission, onExit
       ? '10.° Biología'
       : student.level === '10-quim-isa'
       ? 'Química Isabella Antonino'
+      : student.level === '10-bio-isa'
+      ? 'Biología Isabella Antonino'
       : student.level === 10
       ? '10.° Química'
       : `${student.level}.° Año`;

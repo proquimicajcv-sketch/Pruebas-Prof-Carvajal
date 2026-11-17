@@ -1,5 +1,9 @@
 export type StandardAcademicLevel = 7 | 8 | 9 | 10;
-export type AcademicLevel = StandardAcademicLevel | '10-bio' | '10-quim-isa';
+export type AcademicLevel =
+  | StandardAcademicLevel
+  | '10-bio'
+  | '10-quim-isa'
+  | '10-bio-isa';
 
 export type ExamSectionId =
   | 'selection'
@@ -110,14 +114,16 @@ export interface IsabellaExamImage {
 }
 
 export interface IsabellaExamConfig {
-  level: '10-quim-isa';
+  level: '10-quim-isa' | '10-bio-isa';
   title: string;
   subtitle: string;
   themeColor: string;
+  matching1Title?: string;
+  matching2Title?: string;
   images: {
-    optics: IsabellaExamImage;
-    renewable: IsabellaExamImage;
-    comparison: IsabellaExamImage;
+    section1: IsabellaExamImage;
+    section2: IsabellaExamImage;
+    section3: IsabellaExamImage;
   };
   selection: SelectionQuestion[];
   matching1: MatchingItem[];
@@ -129,7 +135,7 @@ export interface IsabellaExamConfig {
     hint: string;
     value: number;
   };
-  bonus: {
+  bonus?: {
     question: string;
     hint: string;
     value: number;

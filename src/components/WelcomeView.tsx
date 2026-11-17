@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, CalendarClock, CheckCircle2, Lock, Mail, User } from 'lucide-react';
+import { signInWithPopup, signOut, User } from 'firebase/auth';
+import { ArrowRight, CalendarClock, CheckCircle2, Lock, Mail, User as UserIcon } from 'lucide-react';
 import { AcademicLevel, StudentSession } from '../types/exam';
+import { CHEMISTRY_10_CLOSED } from '../data/examData';
+import { BIOLOGY_UNLOCK_ISO, isBiologyScheduledOpen } from '../data/biologyExamData';
+import { auth, googleProvider } from '../firebase';
 import { checkEmailLockedRemote, fetchBiologyStatus } from '../utils/storage';
 import { subscribeRealtime } from '../utils/realtime';
 
@@ -11,6 +15,7 @@ const CREST_IMAGE_URL =
 
 interface WelcomeViewProps {
   biologyUnlockedOverride?: boolean;
+  firebaseUser: User | null;
   onStartExam: (student: StudentSession) => void;
   onOpenTeacherAccess: () => void;
   onRequestBiologyCodeUnlock: () => void;
@@ -21,6 +26,7 @@ const LEVELS: {
   label: string;
   topic: string;
   requiresSchedule: boolean;
+  closed?: boolean;
   accent?: 'emerald' | 'teal';
 }[] = [
   {
@@ -46,11 +52,19 @@ const LEVELS: {
     label: '10.° Química',
     topic: 'Mol · Estequiometría · Rendimiento',
     requiresSchedule: false,
+    closed: CHEMISTRY_10_CLOSED,
   },
   {
     value: '10-quim-isa',
     label: 'Química Isabella Antonino',
     topic: '10.° Año (Adaptación Significativa) · Luz y Energías (37 pts)',
+    requiresSchedule: false,
+    accent: 'teal',
+  },
+  {
+    value: '10-bio-isa',
+    label: 'Biología Isabella Antonino',
+    topic: 'Prueba de Biología (Adecuación Significativa) · 37 pts',
     requiresSchedule: false,
     accent: 'teal',
   },
@@ -65,6 +79,7 @@ const LEVELS: {
 
 export const WelcomeView: React.FC<WelcomeViewProps> = ({
   biologyUnlockedOverride = false,
+  firebaseUser,
   onStartExam,
   onOpenTeacherAccess,
   onRequestBiologyCodeUnlock,
@@ -77,8 +92,19 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   const [scheduleGateBlocked, setScheduleGateBlocked] = useState(false);
   const [scheduledExamsOpen, setScheduledExamsOpen] = useState(false);
   const [checkingLock, setCheckingLock] = useState(false);
+  const [signingInGoogle, setSigningInGoogle] = useState(false);
   const [crestError, setCrestError] = useState(false);
   const [campusError, setCampusError] = useState(false);
+
+  useEffect(() => {
+    if (!firebaseUser) return;
+    if (firebaseUser.email && firebaseUser.email.toLowerCase().endsWith('@sps.ed.cr') && !email) {
+      setEmail(firebaseUser.email.toLowerCase());
+    }
+    if (firebaseUser.displayName && !name) {
+      setName(firebaseUser.displayName);
+    }
+  }, [firebaseUser, email, name]);
 
   useEffect(() => {
     let mounted = true;
@@ -121,11 +147,63 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
       }
     });
 
+    const msUntilScheduled = Date.parse(BIOLOGY_UNLOCK_ISO) - Date.now();
+    const scheduledTimer =
+      msUntilScheduled > 0 && msUntilScheduled <= 86_400_000 * 2
+        ? window.setTimeout(() => {
+            if (mounted && isBiologyScheduledOpen()) {
+              setScheduledExamsOpen(true);
+              if (scheduleGateBlocked) {
+                setScheduleGateBlocked(false);
+                setErrorMsg(null);
+              }
+            }
+          }, msUntilScheduled + 100)
+        : null;
+
     return () => {
       mounted = false;
+      if (scheduledTimer !== null) {
+        window.clearTimeout(scheduledTimer);
+      }
       unsubscribe();
     };
   }, [biologyUnlockedOverride, scheduleGateBlocked, lockedConflict, email]);
+
+  const handleGoogleSignIn = async () => {
+    setErrorMsg(null);
+    setSigningInGoogle(true);
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      const googleEmail = cred.user.email?.toLowerCase() ?? '';
+      if (googleEmail.endsWith('@sps.ed.cr') && !email.trim()) {
+        setEmail(googleEmail);
+      }
+      if (cred.user.displayName && !name.trim()) {
+        setName(cred.user.displayName);
+      }
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? '';
+      if (code === 'auth/popup-blocked') {
+        setErrorMsg(
+          'El navegador bloqueó la ventana de Google. Permita ventanas emergentes e intente de nuevo.'
+        );
+      } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        setErrorMsg('No se pudo conectar la cuenta de Google. Intente nuevamente.');
+      }
+    } finally {
+      setSigningInGoogle(false);
+    }
+  };
+
+  const handleGoogleSwitch = async () => {
+    try {
+      await signOut(auth);
+    } catch {
+      // Ignore signOut failures before re-opening Google selector
+    }
+    await handleGoogleSignIn();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,12 +229,43 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
       return;
     }
 
-    if (selectedLevel === '10-quim-isa' && trimmedEmail !== 'iantonino@sps.ed.cr') {
+    if (
+      (selectedLevel === '10-quim-isa' || selectedLevel === '10-bio-isa') &&
+      trimmedEmail !== 'iantonino@sps.ed.cr'
+    ) {
       setErrorMsg('La evaluación seleccionada no está disponible para este usuario.');
       return;
     }
 
     const levelMeta = LEVELS.find((l) => l.value === selectedLevel);
+    if (levelMeta?.closed) {
+      setErrorMsg(`La prueba de ${levelMeta.label} se encuentra cerrada en este momento.`);
+      return;
+    }
+
+    // Trigger signInWithPopup immediately inside click gesture before any other async awaits
+    if (!auth.currentUser) {
+      setSigningInGoogle(true);
+      try {
+        await signInWithPopup(auth, googleProvider);
+      } catch (err: unknown) {
+        const code = (err as { code?: string })?.code ?? '';
+        if (code === 'auth/popup-blocked') {
+          setErrorMsg(
+            'El navegador bloqueó la ventana de inicio con Google. Permita las ventanas emergentes e intente nuevamente.'
+          );
+        } else {
+          setErrorMsg(
+            'Debe conectar una cuenta de Google para respaldar permanentemente su evaluación antes de ingresar.'
+          );
+        }
+        setSigningInGoogle(false);
+        return;
+      } finally {
+        setSigningInGoogle(false);
+      }
+    }
+
     if (levelMeta?.requiresSchedule) {
       const status = await fetchBiologyStatus();
       const isOpenNow = status.unlocked || biologyUnlockedOverride;
@@ -171,8 +280,14 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
     }
 
     setCheckingLock(true);
-    const locked = await checkEmailLockedRemote(trimmedEmail);
-    setCheckingLock(false);
+    let locked = false;
+    try {
+      locked = await checkEmailLockedRemote(trimmedEmail);
+    } catch {
+      locked = true;
+    } finally {
+      setCheckingLock(false);
+    }
 
     if (locked) {
       setLockedConflict(true);
@@ -280,6 +395,41 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
             </p>
           </div>
 
+          {firebaseUser ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
+              <div className="min-w-0">
+                <span className="text-emerald-800 font-semibold block">
+                  Respaldo en la nube conectado
+                </span>
+                <span className="font-mono text-emerald-700 truncate block">
+                  {firebaseUser.email}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={signingInGoogle}
+                onClick={() => void handleGoogleSwitch()}
+                className="text-xs font-semibold text-emerald-900 underline underline-offset-2 whitespace-nowrap shrink-0 hover:text-emerald-700"
+              >
+                Cambiar cuenta
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+              <span className="text-slate-600">
+                Conecte su cuenta de Google para respaldar sus respuestas permanentemente en la nube.
+              </span>
+              <button
+                type="button"
+                disabled={signingInGoogle}
+                onClick={() => void handleGoogleSignIn()}
+                className="min-h-[36px] px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 font-semibold whitespace-nowrap shrink-0 transition-colors"
+              >
+                {signingInGoogle ? 'Conectando...' : 'Conectar con Google'}
+              </button>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-5" noValidate>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
@@ -303,7 +453,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                       const nextEmail = e.target.value;
                       setEmail(nextEmail);
                       if (
-                        selectedLevel === '10-quim-isa' &&
+                        (selectedLevel === '10-quim-isa' || selectedLevel === '10-bio-isa') &&
                         nextEmail.trim().toLowerCase() !== 'iantonino@sps.ed.cr'
                       ) {
                         setSelectedLevel(null);
@@ -324,7 +474,7 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                   Nombre completo
                 </label>
                 <div className="relative">
-                  <User
+                  <UserIcon
                     className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
                     aria-hidden="true"
                   />
@@ -351,31 +501,33 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {LEVELS.filter(
                   (lvl) =>
-                    lvl.value !== '10-quim-isa' ||
+                    (lvl.value !== '10-quim-isa' && lvl.value !== '10-bio-isa') ||
                     email.trim().toLowerCase() === 'iantonino@sps.ed.cr'
                 ).map((lvl) => {
                   const active = selectedLevel === lvl.value;
+                  const isClosed = Boolean(lvl.closed);
                   const isBio = lvl.value === '10-bio';
-                  const isIsa = lvl.value === '10-quim-isa';
-                  const isBioFullWidth =
-                    isBio && email.trim().toLowerCase() !== 'iantonino@sps.ed.cr';
+                  const isIsa = lvl.value === '10-quim-isa' || lvl.value === '10-bio-isa';
+                  const isBioFullWidth = isBio;
                   return (
                     <label
                       key={String(lvl.value)}
-                      className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors min-h-[44px] ${
+                      className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors min-h-[44px] ${
                         isBioFullWidth ? 'sm:col-span-2' : ''
                       } ${
-                        active
+                        isClosed
+                          ? 'border-slate-200 bg-slate-100/80 opacity-65 cursor-not-allowed'
+                          : active
                           ? isBio
-                            ? 'border-emerald-600 bg-emerald-50/70'
+                            ? 'border-emerald-600 bg-emerald-50/70 cursor-pointer'
                             : isIsa
-                            ? 'border-teal-600 bg-teal-50/70'
-                            : 'border-blue-600 bg-blue-50/70'
+                            ? 'border-teal-600 bg-teal-50/70 cursor-pointer'
+                            : 'border-blue-600 bg-blue-50/70 cursor-pointer'
                           : isBio
-                          ? 'border-emerald-200 bg-emerald-50/30 hover:border-emerald-400 hover:bg-emerald-50/60'
+                          ? 'border-emerald-200 bg-emerald-50/30 hover:border-emerald-400 hover:bg-emerald-50/60 cursor-pointer'
                           : isIsa
-                          ? 'border-teal-200 bg-teal-50/30 hover:border-teal-400 hover:bg-teal-50/60'
-                          : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white'
+                          ? 'border-teal-200 bg-teal-50/30 hover:border-teal-400 hover:bg-teal-50/60 cursor-pointer'
+                          : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white cursor-pointer'
                       }`}
                     >
                       <input
@@ -383,7 +535,9 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                         name="academic-level"
                         value={String(lvl.value)}
                         checked={active}
+                        disabled={isClosed}
                         onChange={() => {
+                          if (isClosed) return;
                           setSelectedLevel(lvl.value);
                           if (errorMsg) setErrorMsg(null);
                           setScheduleGateBlocked(false);
@@ -400,7 +554,9 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                         <div className="flex items-center justify-between gap-2">
                           <span
                             className={`text-sm font-bold truncate ${
-                              isBio
+                              isClosed
+                                ? 'text-slate-500'
+                                : isBio
                                 ? 'text-emerald-900'
                                 : isIsa
                                 ? 'text-teal-900'
@@ -409,7 +565,12 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
                           >
                             {lvl.label}
                           </span>
-                          {lvl.requiresSchedule ? (
+                          {isClosed ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 whitespace-nowrap shrink-0">
+                              <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Cerrada</span>
+                            </span>
+                          ) : lvl.requiresSchedule ? (
                             <span
                               className={`inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap shrink-0 ${
                                 scheduledExamsOpen
@@ -469,16 +630,22 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
 
             <button
               type="submit"
-              disabled={checkingLock}
+              disabled={checkingLock || signingInGoogle}
               className={`w-full min-h-[44px] disabled:opacity-60 text-white font-semibold text-sm py-3 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 whitespace-nowrap shrink-0 ${
                 selectedLevel === '10-bio'
                   ? 'bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-600'
-                  : selectedLevel === '10-quim-isa'
+                  : selectedLevel === '10-quim-isa' || selectedLevel === '10-bio-isa'
                   ? 'bg-teal-600 hover:bg-teal-700 focus-visible:ring-teal-600'
                   : 'bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-600'
               }`}
             >
-              <span>{checkingLock ? 'Verificando acceso...' : 'Ingresar a la Evaluación'}</span>
+              <span>
+                {signingInGoogle
+                  ? 'Conectando cuenta Google...'
+                  : checkingLock
+                  ? 'Verificando acceso...'
+                  : 'Ingresar a la Evaluación'}
+              </span>
               <ArrowRight className="w-4 h-4" aria-hidden="true" />
             </button>
           </form>
