@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { signInWithPopup, signOut, User } from 'firebase/auth';
 import { ArrowRight, CalendarClock, CheckCircle2, Lock, Mail, User as UserIcon } from 'lucide-react';
 import { AcademicLevel, StudentSession } from '../types/exam';
@@ -90,29 +90,45 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [lockedConflict, setLockedConflict] = useState(false);
   const [scheduleGateBlocked, setScheduleGateBlocked] = useState(false);
-  const [scheduledExamsOpen, setScheduledExamsOpen] = useState(false);
+  const [scheduledExamsOpen, setScheduledExamsOpen] = useState(() => isBiologyScheduledOpen());
   const [checkingLock, setCheckingLock] = useState(false);
   const [signingInGoogle, setSigningInGoogle] = useState(false);
   const [crestError, setCrestError] = useState(false);
   const [campusError, setCampusError] = useState(false);
+  const lastPrefilledUidRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!firebaseUser) return;
-    if (firebaseUser.email && firebaseUser.email.toLowerCase().endsWith('@sps.ed.cr') && !email) {
-      setEmail(firebaseUser.email.toLowerCase());
+    if (!firebaseUser) {
+      lastPrefilledUidRef.current = null;
+      return;
     }
-    if (firebaseUser.displayName && !name) {
-      setName(firebaseUser.displayName);
+    if (lastPrefilledUidRef.current === firebaseUser.uid) {
+      return;
     }
-  }, [firebaseUser, email, name]);
+    lastPrefilledUidRef.current = firebaseUser.uid;
+    if (firebaseUser.email && firebaseUser.email.toLowerCase().endsWith('@sps.ed.cr')) {
+      setEmail((prev) => prev || firebaseUser.email!.toLowerCase());
+    }
+    if (firebaseUser.displayName) {
+      setName((prev) => prev || firebaseUser.displayName!);
+    }
+  }, [firebaseUser]);
 
   useEffect(() => {
     let mounted = true;
-    void fetchBiologyStatus().then((status) => {
-      if (mounted) {
-        setScheduledExamsOpen(status.unlocked || biologyUnlockedOverride);
-      }
-    });
+    void fetchBiologyStatus()
+      .then((status) => {
+        if (mounted) {
+          setScheduledExamsOpen(
+            status.unlocked || biologyUnlockedOverride || isBiologyScheduledOpen()
+          );
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setScheduledExamsOpen(biologyUnlockedOverride || isBiologyScheduledOpen());
+        }
+      });
 
     const unsubscribe = subscribeRealtime((event) => {
       if (!mounted) return;
@@ -243,37 +259,34 @@ export const WelcomeView: React.FC<WelcomeViewProps> = ({
       return;
     }
 
-    // Trigger signInWithPopup immediately inside click gesture before any other async awaits
+    // Attempt Google Sign-In immediately inside click gesture for Firestore persistence,
+    // without blocking students if popups are restricted or they lack a Google session
     if (!auth.currentUser) {
       setSigningInGoogle(true);
       try {
         await signInWithPopup(auth, googleProvider);
-      } catch (err: unknown) {
-        const code = (err as { code?: string })?.code ?? '';
-        if (code === 'auth/popup-blocked') {
-          setErrorMsg(
-            'El navegador bloqueó la ventana de inicio con Google. Permita las ventanas emergentes e intente nuevamente.'
-          );
-        } else {
-          setErrorMsg(
-            'Debe conectar una cuenta de Google para respaldar permanentemente su evaluación antes de ingresar.'
-          );
-        }
-        setSigningInGoogle(false);
-        return;
+      } catch {
+        // Continue with server + local backup so no student is locked out of their exam
       } finally {
         setSigningInGoogle(false);
       }
     }
 
     if (levelMeta?.requiresSchedule) {
-      const status = await fetchBiologyStatus();
-      const isOpenNow = status.unlocked || biologyUnlockedOverride;
+      let isOpenNow = biologyUnlockedOverride || isBiologyScheduledOpen();
+      if (!isOpenNow) {
+        try {
+          const status = await fetchBiologyStatus();
+          isOpenNow = status.unlocked || biologyUnlockedOverride || isBiologyScheduledOpen();
+        } catch {
+          isOpenNow = biologyUnlockedOverride || isBiologyScheduledOpen();
+        }
+      }
       setScheduledExamsOpen(isOpenNow);
       if (!isOpenNow) {
         setScheduleGateBlocked(true);
         setErrorMsg(
-          `La prueba de ${levelMeta.label} se habilitará automáticamente el miércoles 18 de noviembre de 2026 a las 7:20 a.m. (o antes mediante código docente).`
+          `La prueba de ${levelMeta.label} aún no se encuentra habilitada (o solicite al docente habilitarla con el código docente).`
         );
         return;
       }

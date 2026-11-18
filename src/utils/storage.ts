@@ -205,7 +205,10 @@ export async function checkEmailLockedRemote(email: string): Promise<boolean> {
         unlockEmail(normalized);
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.GET, lockPath);
+      const code = (error as { code?: string })?.code ?? '';
+      if (code === 'permission-denied') {
+        handleFirestoreError(error, OperationType.GET, lockPath);
+      }
     }
   }
 
@@ -260,7 +263,9 @@ export function subscribePlatformSettings(
       }
     },
     (error) => {
-      handleFirestoreError(error, OperationType.GET, settingsPath);
+      if ((error as { code?: string })?.code === 'permission-denied') {
+        handleFirestoreError(error, OperationType.GET, settingsPath);
+      }
     }
   );
 }
@@ -283,7 +288,9 @@ export async function fetchBiologyStatus(): Promise<{
       setBiologyEarlyUnlockLocal(firestoreEarly);
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, 'settings/platform');
+    if ((error as { code?: string })?.code === 'permission-denied') {
+      handleFirestoreError(error, OperationType.GET, 'settings/platform');
+    }
   }
 
   try {

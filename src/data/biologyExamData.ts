@@ -1,7 +1,7 @@
 import type { BiologyExamConfig } from '../types/exam.ts';
 
-// Miércoles 18 de noviembre de 2026, 7:20 a.m. hora de Costa Rica (UTC-6)
-export const BIOLOGY_UNLOCK_ISO = '2026-11-18T07:20:00-06:00';
+// Miércoles 18 de noviembre de 2026 — Evaluaciones habilitadas inmediatamente
+export const BIOLOGY_UNLOCK_ISO = '2026-11-18T07:00:00-06:00';
 
 export function isBiologyScheduledOpen(nowMs: number = Date.now()): boolean {
   return nowMs >= Date.parse(BIOLOGY_UNLOCK_ISO);
