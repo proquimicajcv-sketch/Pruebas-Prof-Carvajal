@@ -21,6 +21,7 @@ import { playLoudAlarm } from './utils/alarm';
 import { subscribeRealtime } from './utils/realtime';
 import {
   checkEmailLockedRemote,
+  clearAllLockedEmails,
   clearExamDraft,
   deleteSubmissionRemote,
   fetchAdminSubmissions,
@@ -28,7 +29,7 @@ import {
   getActiveExamDraft,
   getExamDraft,
   getStoredSubmissions,
-  lockEmail,
+  lockEmailRemote,
   saveExamDraft,
   setActiveDraftEmail,
   setBiologyEarlyUnlockLocal,
@@ -36,6 +37,7 @@ import {
   subscribeAdminSubmissions,
   subscribePlatformSettings,
   submitAndGradeExam,
+  unlockEmail,
   unlockEmailRemote,
 } from './utils/storage';
 import { WelcomeView } from './components/WelcomeView';
@@ -252,7 +254,15 @@ export default function App() {
       }
 
       if (event.type === 'lock:updated') {
+        if (!event.locked) {
+          if (event.email) {
+            unlockEmail(event.email, event.unlockedAt);
+          } else {
+            clearAllLockedEmails(event.unlockedAt);
+          }
+        }
         if (
+          !event.locked &&
           view === 'exam' &&
           lockedOut &&
           student &&
@@ -264,6 +274,13 @@ export default function App() {
       }
 
       if (event.type === 'submissions:updated') {
+        if (!event.locked) {
+          if (event.email) {
+            unlockEmail(event.email, event.unlockedAt);
+          } else {
+            clearAllLockedEmails(event.unlockedAt);
+          }
+        }
         if (teacherPanelOpen && verifiedAdminCode) {
           void fetchAdminSubmissions(verifiedAdminCode).then(setSubmissions);
         }
@@ -318,7 +335,7 @@ export default function App() {
 
           if (student) {
             lockSyncPendingRef.current = true;
-            lockEmail(student.email);
+            void lockEmailRemote(student.email);
             void submitAndGradeExam(student, answers, nextList, true)
               .then((saved) => {
                 lockoutSubmissionIdRef.current = saved.id;

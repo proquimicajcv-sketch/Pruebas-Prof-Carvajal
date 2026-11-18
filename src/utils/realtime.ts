@@ -18,11 +18,13 @@ export type RealtimeEvent =
       type: 'lock:updated';
       email: string | null;
       locked: boolean;
+      unlockedAt?: number;
     }
   | {
       type: 'submissions:updated';
       email: string | null;
       locked: boolean;
+      unlockedAt?: number;
     };
 
 type RealtimeListener = (event: RealtimeEvent) => void;

@@ -34,6 +34,7 @@ import { buildSubmissionsCsv, evaluateFullSubmission } from './grading';
 
 const SUBMISSIONS_KEY = 'sps_ciencias_submissions_v1';
 const LOCKED_EMAILS_KEY = 'sps_ciencias_locked_emails_v1';
+const UNLOCKED_EMAILS_KEY = 'sps_ciencias_unlocked_emails_v1';
 const BIOLOGY_EARLY_UNLOCK_KEY = 'sps_biologia10_early_unlock_v1';
 const EXAM_DRAFTS_KEY = 'sps_ciencias_exam_drafts_v1';
 const ACTIVE_DRAFT_EMAIL_KEY = 'sps_ciencias_active_email_v1';
@@ -144,19 +145,41 @@ export function clearExamDraft(email: string): void {
   }
 }
 
-export function getLockedEmails(): Record<string, boolean> {
+export function getLockedEmails(): Record<string, boolean | number> {
   try {
     const raw = localStorage.getItem(LOCKED_EMAILS_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    return raw ? (JSON.parse(raw) as Record<string, boolean | number>) : {};
   } catch {
     return {};
   }
 }
 
-export function lockEmail(email: string): void {
+function getUnlockedTimestamps(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(UNLOCKED_EMAILS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function getLocalLockedAt(email: string): number {
+  const normalized = email.trim().toLowerCase();
+  const val = getLockedEmails()[normalized];
+  if (!val) return 0;
+  return typeof val === 'number' ? val : 1;
+}
+
+function getLocalUnlockedAt(email: string): number {
+  const normalized = email.trim().toLowerCase();
+  const map = getUnlockedTimestamps();
+  return Math.max(map._global || 0, map[normalized] || 0);
+}
+
+export function lockEmail(email: string, lockedAt: number = Date.now()): void {
   const normalized = email.trim().toLowerCase();
   const current = getLockedEmails();
-  current[normalized] = true;
+  current[normalized] = lockedAt;
   try {
     localStorage.setItem(LOCKED_EMAILS_KEY, JSON.stringify(current));
   } catch {
@@ -164,20 +187,26 @@ export function lockEmail(email: string): void {
   }
 }
 
-export function unlockEmail(email: string): void {
+export function unlockEmail(email: string, unlockedAt: number = Date.now()): void {
   const normalized = email.trim().toLowerCase();
   const current = getLockedEmails();
   delete current[normalized];
+  const unlockedMap = getUnlockedTimestamps();
+  unlockedMap[normalized] = Math.max(unlockedMap[normalized] || 0, unlockedAt);
   try {
     localStorage.setItem(LOCKED_EMAILS_KEY, JSON.stringify(current));
+    localStorage.setItem(UNLOCKED_EMAILS_KEY, JSON.stringify(unlockedMap));
   } catch {
     // Ignore storage errors
   }
 }
 
-export function clearAllLockedEmails(): void {
+export function clearAllLockedEmails(unlockedAt: number = Date.now()): void {
+  const unlockedMap = getUnlockedTimestamps();
+  unlockedMap._global = Math.max(unlockedMap._global || 0, unlockedAt);
   try {
     localStorage.removeItem(LOCKED_EMAILS_KEY);
+    localStorage.setItem(UNLOCKED_EMAILS_KEY, JSON.stringify(unlockedMap));
   } catch {
     // Ignore storage errors
   }
@@ -185,11 +214,48 @@ export function clearAllLockedEmails(): void {
 
 export function isEmailLocked(email: string): boolean {
   const normalized = email.trim().toLowerCase();
-  return Boolean(getLockedEmails()[normalized]);
+  const lockedAt = getLocalLockedAt(normalized);
+  if (!lockedAt) return false;
+  const unlockedAt = getLocalUnlockedAt(normalized);
+  return unlockedAt <= lockedAt;
+}
+
+export async function lockEmailRemote(email: string): Promise<void> {
+  const normalized = email.trim().toLowerCase();
+  lockEmail(normalized);
+
+  if (auth.currentUser && auth.currentUser.emailVerified) {
+    const lockId = sanitizeLockId(normalized);
+    const lockPath = `exam_locks/${lockId}`;
+    try {
+      await setDoc(doc(db, 'exam_locks', lockId), {
+        ownerUid: auth.currentUser.uid,
+        email: normalized,
+        locked: true,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'permission-denied') {
+        handleFirestoreError(error, OperationType.WRITE, lockPath);
+      }
+    }
+  }
+
+  try {
+    await fetch('/api/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalized }),
+    });
+  } catch {
+    // Kept locally + Firestore
+  }
 }
 
 export async function checkEmailLockedRemote(email: string): Promise<boolean> {
   const normalized = email.trim().toLowerCase();
+  let firestoreLocked = false;
+  let firestoreLockedAt = 0;
 
   if (auth.currentUser?.emailVerified) {
     const lockId = sanitizeLockId(normalized);
@@ -197,12 +263,15 @@ export async function checkEmailLockedRemote(email: string): Promise<boolean> {
     try {
       const snap = await getDoc(doc(db, 'exam_locks', lockId));
       if (snap.exists()) {
-        const isLocked = Boolean((snap.data() as { locked?: boolean }).locked);
-        if (isLocked) {
-          lockEmail(normalized);
-          return true;
+        const data = snap.data() as {
+          locked?: boolean;
+          updatedAt?: { toMillis?: () => number };
+        };
+        if (data.locked) {
+          firestoreLocked = true;
+          firestoreLockedAt =
+            typeof data.updatedAt?.toMillis === 'function' ? data.updatedAt.toMillis() : 1;
         }
-        unlockEmail(normalized);
       }
     } catch (error) {
       const code = (error as { code?: string })?.code ?? '';
@@ -212,24 +281,50 @@ export async function checkEmailLockedRemote(email: string): Promise<boolean> {
     }
   }
 
+  let serverLocked = false;
+  let serverUnlockedAt = 0;
   try {
     const res = await fetch(
       `/api/check-lock?email=${encodeURIComponent(normalized)}`
     );
     if (res.ok) {
-      const data = (await res.json()) as { locked?: boolean };
-      const serverLocked = Boolean(data.locked);
+      const data = (await res.json()) as {
+        locked?: boolean;
+        lockedAt?: number;
+        unlockedAt?: number;
+      };
+      serverLocked = Boolean(data.locked);
+      serverUnlockedAt = Number(data.unlockedAt || 0);
       if (serverLocked) {
-        lockEmail(normalized);
-      } else {
-        unlockEmail(normalized);
+        lockEmail(normalized, Number(data.lockedAt || 0) || Date.now());
+        return true;
       }
-      return serverLocked;
     }
   } catch {
-    // Fall back to local check when offline
+    // Fall back to Firestore + local check when offline
   }
-  return isEmailLocked(normalized);
+
+  const effectiveUnlockedAt = Math.max(serverUnlockedAt, getLocalUnlockedAt(normalized));
+
+  if (firestoreLocked) {
+    if (effectiveUnlockedAt > firestoreLockedAt) {
+      unlockEmail(normalized, effectiveUnlockedAt);
+      return false;
+    }
+    lockEmail(normalized, firestoreLockedAt || Date.now());
+    return true;
+  }
+
+  const localLockedAt = getLocalLockedAt(normalized);
+  if (localLockedAt > 0) {
+    if (effectiveUnlockedAt > localLockedAt) {
+      unlockEmail(normalized, effectiveUnlockedAt);
+      return false;
+    }
+    return true;
+  }
+
+  return false;
 }
 
 export function getBiologyEarlyUnlockLocal(): boolean {
@@ -428,6 +523,27 @@ export async function submitAndGradeExam(
     lockedOut
   );
 
+  let serverSaved = false;
+  try {
+    const res = await fetch('/api/submissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: localEntry.id,
+        submittedAt: localEntry.submittedAt,
+        student: normalizedStudent,
+        answers,
+        infractions,
+        lockedOut,
+      }),
+    });
+    if (res.ok) {
+      serverSaved = true;
+    }
+  } catch {
+    // Will continue saving to Firestore + localStorage
+  }
+
   // Persist permanently in Firestore when authenticated
   if (auth.currentUser && auth.currentUser.emailVerified) {
     const subPath = `submissions/${localEntry.id}`;
@@ -474,30 +590,71 @@ export async function submitAndGradeExam(
     }
   }
 
-  try {
-    const res = await fetch('/api/submissions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student: normalizedStudent,
-        answers,
-        infractions,
-        lockedOut,
-      }),
-    });
-    if (res.ok) {
-      const receipt = (await res.json()) as { id?: string; submittedAt?: string };
-      return {
-        ...localEntry,
-        id: localEntry.id || receipt.id || localEntry.id,
-        submittedAt: localEntry.submittedAt || receipt.submittedAt || localEntry.submittedAt,
-      };
-    }
-  } catch {
-    // Kept safely in Firestore + localStorage fallback
-  }
-
+  void serverSaved;
   return localEntry;
+}
+
+async function persistSubmissionsToFirestore(records: StoredSubmission[]): Promise<void> {
+  if (!isVerifiedAdmin() || !auth.currentUser || records.length === 0) {
+    return;
+  }
+  for (const rec of records) {
+    const safeId = String(rec.id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+    if (!safeId || !rec.student?.email || !rec.student?.name) continue;
+    const email = rec.student.email.trim().toLowerCase().slice(0, 160);
+    if (!email.endsWith('@sps.ed.cr') || email.length < 11) continue;
+    const rawName = rec.student.name.trim().slice(0, 160);
+    const safeName = rawName.length >= 3 ? rawName : `${rawName} SPS`.trim();
+    const breakdown = rec.gradeBreakdown ?? evaluateFullSubmission(rec.student.level, rec.answers);
+    const safeInfractions = (rec.infractions || []).slice(0, 10).map((inf) => ({
+      timestamp: String(inf.timestamp || '').slice(0, 40),
+      reason: String(inf.reason || '').slice(0, 200),
+    }));
+    const subPath = `submissions/${safeId}`;
+    try {
+      await setDoc(doc(db, 'submissions', safeId), {
+        id: safeId,
+        ownerUid: auth.currentUser.uid,
+        studentEmail: email,
+        studentName: safeName,
+        studentLevel: String(rec.student.level),
+        submittedAt: String(rec.submittedAt || new Date().toISOString()).slice(0, 40),
+        createdAt: serverTimestamp(),
+        lockedOut: Boolean(rec.lockedOut),
+        student: {
+          email,
+          name: safeName,
+          level: rec.student.level,
+        },
+        answers: stripUndefined(
+          rec.answers || {
+            selection: {},
+            matching: {},
+            completes: {},
+            development: {},
+            bonus: '',
+          }
+        ),
+        infractions: safeInfractions,
+        objectiveScore: stripUndefined(
+          rec.objectiveScore ?? {
+            selection: breakdown.selection,
+            selectionTotal: breakdown.selectionTotal,
+            matching: breakdown.matching,
+            matchingTotal: breakdown.matchingTotal,
+            completes: breakdown.completes,
+            completesTotal: breakdown.completesTotal,
+            totalEarned: breakdown.selection + breakdown.matching + breakdown.completes,
+            totalPossible:
+              breakdown.selectionTotal + breakdown.matchingTotal + breakdown.completesTotal,
+          }
+        ),
+        gradeBreakdown: stripUndefined(breakdown),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, subPath);
+    }
+  }
 }
 
 export function subscribeAdminSubmissions(
@@ -557,16 +714,46 @@ export async function fetchAdminSubmissions(code: string): Promise<StoredSubmiss
     // Fall back to Firestore + local cache
   }
 
-  const merged = mergeSubmissionsLists(cloudSubs, mergeSubmissionsLists(serverSubs, getStoredSubmissions()));
+  const localSubs = getStoredSubmissions();
+  const merged = mergeSubmissionsLists(cloudSubs, mergeSubmissionsLists(serverSubs, localSubs));
   saveStoredSubmissionsCache(merged);
+
+  // Sync missing server/local submissions into Firestore when admin is signed in
+  if (isVerifiedAdmin()) {
+    const cloudIds = new Set(cloudSubs.map((s) => s.id));
+    const missingInCloud = merged.filter((s) => !cloudIds.has(s.id));
+    if (missingInCloud.length > 0) {
+      void persistSubmissionsToFirestore(missingInCloud);
+    }
+  }
+
+  // Mirror missing cloud/local submissions onto Express data/registro_notas_sps.json & .csv
+  const serverIds = new Set(serverSubs.map((s) => s.id));
+  const missingOnServer = merged.filter((s) => !serverIds.has(s.id));
+  if (missingOnServer.length > 0 && code) {
+    try {
+      await fetch('/api/admin/sync-submissions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-teacher-code': code,
+        },
+        body: JSON.stringify({ submissions: missingOnServer }),
+      });
+    } catch {
+      // Ignore transient sync error
+    }
+  }
+
   return merged;
 }
 
 export async function unlockEmailRemote(code: string, email?: string): Promise<void> {
+  const fallbackTs = Date.now();
   if (email) {
-    unlockEmail(email);
+    unlockEmail(email, fallbackTs);
   } else {
-    clearAllLockedEmails();
+    clearAllLockedEmails(fallbackTs);
   }
 
   if (isVerifiedAdmin()) {
@@ -590,7 +777,7 @@ export async function unlockEmailRemote(code: string, email?: string): Promise<v
   }
 
   try {
-    await fetch('/api/admin/unlock', {
+    const res = await fetch('/api/admin/unlock', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -598,6 +785,13 @@ export async function unlockEmailRemote(code: string, email?: string): Promise<v
       },
       body: JSON.stringify({ email }),
     });
+    if (res.ok) {
+      const data = (await res.json()) as { unlockedAt?: number };
+      if (data.unlockedAt) {
+        if (email) unlockEmail(email, data.unlockedAt);
+        else clearAllLockedEmails(data.unlockedAt);
+      }
+    }
   } catch {
     // Ignore network failure
   }
@@ -855,6 +1049,13 @@ export async function downloadOfficialReport(
     const blob = await res.blob();
     triggerDownload(blob, 'Acta_Notas_Ciencias_SPS_2026.html');
   }
+}
+
+export function downloadJsonBackup(currentSubmissions: StoredSubmission[]): void {
+  const blob = new Blob([JSON.stringify(currentSubmissions, null, 2)], {
+    type: 'application/json;charset=utf-8;',
+  });
+  triggerDownload(blob, 'Respaldo_Notas_Ciencias_SPS_2026.json');
 }
 
 function triggerDownload(blob: Blob, filename: string): void {

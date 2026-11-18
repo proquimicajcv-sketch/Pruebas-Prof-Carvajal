@@ -18,6 +18,7 @@ const DATA_DIR = path.resolve(__dirname, 'data');
 const SUBMISSIONS_JSON_PATH = path.join(DATA_DIR, 'registro_notas_sps.json');
 const SUBMISSIONS_CSV_PATH = path.join(DATA_DIR, 'registro_notas_sps.csv');
 const LOCKED_EMAILS_PATH = path.join(DATA_DIR, 'locked_emails.json');
+const UNLOCKED_EMAILS_PATH = path.join(DATA_DIR, 'unlocked_emails.json');
 const BIOLOGY_UNLOCK_PATH = path.join(DATA_DIR, 'biology_unlock.json');
 
 function ensureDataDir(): void {
@@ -46,22 +47,51 @@ function writeSubmissions(submissions: StoredSubmission[]): void {
   fs.writeFileSync(SUBMISSIONS_CSV_PATH, csv, 'utf-8');
 }
 
-function readLockedEmails(): Record<string, boolean> {
+function readLockedEmails(): Record<string, boolean | number> {
   ensureDataDir();
   if (!fs.existsSync(LOCKED_EMAILS_PATH)) {
     return {};
   }
   try {
     const raw = fs.readFileSync(LOCKED_EMAILS_PATH, 'utf-8');
-    return JSON.parse(raw) as Record<string, boolean>;
+    return JSON.parse(raw) as Record<string, boolean | number>;
   } catch {
     return {};
   }
 }
 
-function writeLockedEmails(locked: Record<string, boolean>): void {
+function writeLockedEmails(locked: Record<string, boolean | number>): void {
   ensureDataDir();
   fs.writeFileSync(LOCKED_EMAILS_PATH, JSON.stringify(locked, null, 2), 'utf-8');
+}
+
+function readUnlockedTimestamps(): Record<string, number> {
+  ensureDataDir();
+  if (!fs.existsSync(UNLOCKED_EMAILS_PATH)) {
+    return {};
+  }
+  try {
+    const raw = fs.readFileSync(UNLOCKED_EMAILS_PATH, 'utf-8');
+    return JSON.parse(raw) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function writeUnlockedTimestamps(unlocked: Record<string, number>): void {
+  ensureDataDir();
+  fs.writeFileSync(UNLOCKED_EMAILS_PATH, JSON.stringify(unlocked, null, 2), 'utf-8');
+}
+
+function recordUnlockedTimestamp(email?: string, ts: number = Date.now()): number {
+  const unlocked = readUnlockedTimestamps();
+  if (email) {
+    unlocked[email] = Math.max(unlocked[email] || 0, ts);
+  } else {
+    unlocked._global = Math.max(unlocked._global || 0, ts);
+  }
+  writeUnlockedTimestamps(unlocked);
+  return ts;
 }
 
 function readBiologyEarlyUnlock(): boolean {
@@ -315,11 +345,13 @@ type RealtimeBroadcastEvent =
       type: 'lock:updated';
       email: string | null;
       locked: boolean;
+      unlockedAt?: number;
     }
   | {
       type: 'submissions:updated';
       email: string | null;
       locked: boolean;
+      unlockedAt?: number;
     };
 
 async function startServer(): Promise<void> {
@@ -394,15 +426,44 @@ async function startServer(): Promise<void> {
   app.get('/api/check-lock', (req: Request, res: Response) => {
     const email = String(req.query.email ?? '').trim().toLowerCase();
     if (!email) {
-      res.json({ locked: false });
+      res.json({ locked: false, unlockedAt: 0 });
       return;
     }
     const locked = readLockedEmails();
-    res.json({ locked: Boolean(locked[email]) });
+    const unlocked = readUnlockedTimestamps();
+    const rawLocked = locked[email];
+    const unlockedAt = Math.max(unlocked._global || 0, unlocked[email] || 0);
+    res.json({
+      locked: Boolean(rawLocked),
+      lockedAt: typeof rawLocked === 'number' ? rawLocked : rawLocked ? 1 : 0,
+      unlockedAt,
+    });
+  });
+
+  app.post('/api/lock', (req: Request, res: Response) => {
+    const email = String((req.body as { email?: string })?.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!email || !email.endsWith('@sps.ed.cr')) {
+      res.status(400).json({ error: 'Correo institucional inválido.' });
+      return;
+    }
+    const locked = readLockedEmails();
+    const now = Date.now();
+    locked[email] = now;
+    writeLockedEmails(locked);
+    broadcast({
+      type: 'lock:updated',
+      email,
+      locked: true,
+    });
+    res.json({ ok: true, lockedAt: now });
   });
 
   app.post('/api/submissions', (req: Request, res: Response) => {
     const body = req.body as {
+      id?: string;
+      submittedAt?: string;
       student?: StudentSession;
       answers?: UserAnswers;
       infractions?: InfractionEvent[];
@@ -449,11 +510,20 @@ async function startServer(): Promise<void> {
       level: body.student.level,
     };
 
+    const safeId =
+      typeof body.id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(body.id)
+        ? body.id
+        : `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const safeSubmittedAt =
+      typeof body.submittedAt === 'string' && !Number.isNaN(Date.parse(body.submittedAt))
+        ? body.submittedAt
+        : new Date().toISOString();
+
     const gradeBreakdown = evaluateFullSubmission(student.level, body.answers);
     const submission: StoredSubmission = {
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: safeId,
       student,
-      submittedAt: new Date().toISOString(),
+      submittedAt: safeSubmittedAt,
       answers: body.answers,
       infractions: Array.isArray(body.infractions) ? body.infractions : [],
       lockedOut: Boolean(body.lockedOut),
@@ -474,12 +544,12 @@ async function startServer(): Promise<void> {
       gradeBreakdown,
     };
 
-    const existing = readSubmissions();
+    const existing = readSubmissions().filter((s) => s.id !== submission.id);
     const updated = [submission, ...existing];
     writeSubmissions(updated);
 
     const locked = readLockedEmails();
-    locked[email] = true;
+    locked[email] = Date.now();
     writeLockedEmails(locked);
 
     broadcast({
@@ -527,6 +597,26 @@ async function startServer(): Promise<void> {
     res.json({ submissions });
   });
 
+  app.post('/api/admin/sync-submissions', requireTeacherCode, (req: Request, res: Response) => {
+    const incoming = (req.body as { submissions?: StoredSubmission[] })?.submissions;
+    if (!Array.isArray(incoming)) {
+      res.status(400).json({ error: 'Lista de entregas inválida.' });
+      return;
+    }
+    const existing = readSubmissions();
+    const byId = new Map<string, StoredSubmission>();
+    for (const item of [...existing, ...incoming]) {
+      if (item && item.id && item.student?.email) {
+        byId.set(item.id, item);
+      }
+    }
+    const merged = Array.from(byId.values()).sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+    writeSubmissions(merged);
+    res.json({ ok: true, submissions: merged });
+  });
+
   app.get('/api/admin/export/csv', requireTeacherCode, (_req: Request, res: Response) => {
     const submissions = readSubmissions();
     const csv = buildSubmissionsCsv(submissions);
@@ -554,6 +644,7 @@ async function startServer(): Promise<void> {
     const email = String((req.body as { email?: string })?.email ?? '')
       .trim()
       .toLowerCase();
+    const unlockedAt = recordUnlockedTimestamp(email || undefined);
     if (email) {
       const locked = readLockedEmails();
       delete locked[email];
@@ -565,8 +656,9 @@ async function startServer(): Promise<void> {
       type: 'lock:updated',
       email: email || null,
       locked: false,
+      unlockedAt,
     });
-    res.json({ ok: true });
+    res.json({ ok: true, unlockedAt });
   });
 
   app.delete('/api/admin/submissions/:id', requireTeacherCode, (req: Request, res: Response) => {
@@ -577,17 +669,20 @@ async function startServer(): Promise<void> {
     writeSubmissions(updated);
 
     let unlockedEmail: string | null = null;
+    let unlockedAt: number | undefined;
     if (target) {
       unlockedEmail = target.student.email.toLowerCase();
       const locked = readLockedEmails();
       delete locked[unlockedEmail];
       writeLockedEmails(locked);
+      unlockedAt = recordUnlockedTimestamp(unlockedEmail);
     }
 
     broadcast({
       type: 'submissions:updated',
       email: unlockedEmail,
       locked: false,
+      unlockedAt,
     });
 
     res.json({ ok: true, submissions: updated });

@@ -33,6 +33,7 @@ import {
 } from '../utils/grading';
 import {
   deleteSubmissionRemote,
+  downloadJsonBackup,
   downloadMasterCsv,
   downloadOfficialReport,
   getCostaRicaDateKey,
@@ -533,6 +534,18 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
                 <Calendar className="w-3 h-3" aria-hidden="true" />
                 <span>17 nov 2026</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setFilterDate('2026-11-18')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md inline-flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${
+                  filterDate === '2026-11-18'
+                    ? 'bg-white text-emerald-700 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Calendar className="w-3 h-3" aria-hidden="true" />
+                <span>Hoy (18 nov)</span>
+              </button>
               <input
                 type="date"
                 aria-label="Filtrar por fecha"
@@ -596,6 +609,15 @@ export const TeacherDashboardModal: React.FC<TeacherDashboardModalProps> = ({
             >
               <FileText className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Descargar Acta (.html)</span>
+            </button>
+            <button
+              type="button"
+              disabled={filtered.length === 0}
+              onClick={() => downloadJsonBackup(filtered)}
+              className="min-h-[38px] px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-40 text-slate-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Respaldo (.json)</span>
             </button>
             <button
               type="button"
